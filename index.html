@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ETMC elev8 | APV Aging Dashboard</title>
+    <title>EMI SITE MONITORING</title>
     
     <!-- SPEED OPTIMIZATION: Pre-connect to CDNs -->
     <link rel="preconnect" href="https://cdn.tailwindcss.com">
@@ -100,13 +100,12 @@
         // FIREBASE CONFIGURATION
         // =========================================================================
         const customNetlifyConfig = {
-            apiKey: "AIzaSyDchDtXinUaSPOWW56j6HCjzDhYoKNE9J0",
-            authDomain: "project-ehi-262ec.firebaseapp.com",
-            projectId: "project-ehi-262ec",
-              storageBucket: "project-ehi-262ec.firebasestorage.app",
-              messagingSenderId: "519235469732",
-              appId: "1:519235469732:web:6a9fb25a6869bbe47b0131",
-              measurementId: "G-SX0Q9G2TSS"
+            apiKey: "AIzaSyAHWmxnUnL3RN9JAbUhokfSKoSMSPmmcMw",
+            authDomain: "emi-site-6d725.firebaseapp.com",
+            projectId: "emi-site-6d725",
+            storageBucket: "emi-site-6d725.firebasestorage.app",
+            messagingSenderId: "675549825822",
+            appId: "1:675549825822:web:0c6345556ae512416bd70f"
         };
         // =========================================================================
 
@@ -114,10 +113,10 @@
         if (typeof __firebase_config !== 'undefined' && __firebase_config) {
             try { firebaseConfig = JSON.parse(__firebase_config); } catch(e) {}
         }
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'procure-monitor-prod';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'emi-site-monitoring';
         
         try {
-            if (!firebase.apps.length) {
+            if (!firebase.apps.length && firebaseConfig.apiKey) {
                 firebase.initializeApp(firebaseConfig);
             }
         } catch (e) { console.error("Firebase init error:", e); }
@@ -245,6 +244,7 @@
                 case 'Current': return 'bg-emerald-500';
                 case '1-30 Days': return 'bg-yellow-400';
                 case '31-60 Days': return 'bg-orange-500';
+                case '61-90 Days': return 'bg-red-500';
                 case '61-90 Days': return 'bg-red-500';
                 case '> 90 Days': return 'bg-rose-700';
                 default: return 'bg-gray-300';
@@ -966,7 +966,7 @@
                 return (
                     <div className="min-h-screen flex flex-col justify-center p-4 animate-in fade-in" style={{ backgroundColor: '#11243E' }}>
                         <div className="mb-8 w-full max-w-md mx-auto flex justify-center">
-                            <img src="./ETMC%20LOGO.jpg" alt="elev8 trading and marketing" className="w-72 sm:w-80 object-contain pointer-events-none" style={{ mixBlendMode: 'screen', filter: 'grayscale(100%) contrast(500%)' }} onError={(e) => { e.target.onerror = null; e.target.src = 'https://via.placeholder.com/400x200/ffffff/11243E?text=ETMC+elev8'; }} />
+                            <img src="./ETMC%20LOGO.jpg" alt="EMI SITE MONITORING" className="w-72 sm:w-80 object-contain pointer-events-none" style={{ mixBlendMode: 'screen', filter: 'grayscale(100%) contrast(500%)' }} onError={(e) => { e.target.onerror = null; e.target.src = 'https://via.placeholder.com/400x200/ffffff/11243E?text=EMI+SITE'; }} />
                         </div>
                         <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-auto p-8">
                             <div className="text-center mb-8">
@@ -1610,7 +1610,7 @@
                     <aside className={`fixed inset-y-0 left-0 z-50 w-64 text-slate-300 flex flex-col transform transition-transform md:relative md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`} style={{ backgroundColor: '#11243E' }}>
                         <div className="p-4 flex items-center justify-center border-b border-white/10 bg-transparent">
                             <div className="flex items-center justify-center w-full">
-                                <img src="./ETMC%20LOGO.jpg" alt="ETMC elev8" className="max-h-20 w-auto object-contain pointer-events-none" style={{ mixBlendMode: 'screen', filter: 'grayscale(100%) contrast(500%)' }} onError={(e) => { e.target.onerror = null; e.target.src = 'https://via.placeholder.com/150x50/ffffff/11243E?text=ETMC'; }} />
+                                <img src="./ETMC%20LOGO.jpg" alt="EMI SITE MONITORING" className="max-h-20 w-auto object-contain pointer-events-none" style={{ mixBlendMode: 'screen', filter: 'grayscale(100%) contrast(500%)' }} onError={(e) => { e.target.onerror = null; e.target.src = 'https://via.placeholder.com/150x50/ffffff/11243E?text=EMI+SITE'; }} />
                             </div>
                         </div>
                         <nav className="flex-1 px-4 space-y-2 mt-4 overflow-y-auto">
