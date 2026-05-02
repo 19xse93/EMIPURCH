@@ -562,8 +562,9 @@
                 );
             }, [auditLogs, globalSearchQuery]);
 
-            const { totalPurchases, totalSavings, totalOutstanding, agingSummary, vendorAging, avgProcessingTime, weeklyNeedToPay, endOfWeek, latePRPercentage, onTimePRPercentage, avgDelayDays, latePRsCount, totalWithContract } = useMemo(() => {
+            const { totalPurchases, totalSavings, totalOutstanding, totalPendingChecks, totalChecksCreated, agingSummary, vendorAging, avgProcessingTime, weeklyNeedToPay, endOfWeek, latePRPercentage, onTimePRPercentage, avgDelayDays, latePRsCount, totalWithContract } = useMemo(() => {
                 let tPurchases = 0; let tSavings = 0; let tOutstanding = 0;
+                let tPendingChecks = 0; let tChecksCreated = 0;
                 
                 const currentDay = TODAY.getDay();
                 const diffToMonday = currentDay === 0 ? -6 : 1 - currentDay;
@@ -606,8 +607,17 @@
 
                 baseFilteredApvs.forEach(apv => {
                     const amt = Number(apv.amount || 0);
-                    if (apv.status === 'Unpaid') {
+                    
+                    // Only age Unpaid and Unfunded APVs
+                    if (apv.status === 'Unpaid' && !apv.funded) {
                         tOutstanding += amt;
+                        
+                        if (apv.checkNumber || apv.checkStatus === 'Check Created' || apv.checkStatus === 'Prepared') {
+                            tChecksCreated += amt;
+                        } else {
+                            tPendingChecks += amt;
+                        }
+                        
                         const category = getAgingCategory(apv.dueDate, apv.status);
                         if (summary[category] !== undefined) summary[category] += amt;
                         
@@ -628,7 +638,7 @@
 
                 return { 
                     totalPurchases: tPurchases, totalSavings: tSavings,
-                    totalOutstanding: tOutstanding, 
+                    totalOutstanding: tOutstanding, totalPendingChecks: tPendingChecks, totalChecksCreated: tChecksCreated,
                     agingSummary: summary, vendorAging: Object.values(vAging).sort((a, b) => b.total - a.total),
                     avgProcessingTime: processedCount > 0 ? (totalProcessingDays / processedCount).toFixed(1) : 0,
                     weeklyNeedToPay: weeklyNeed, endOfWeek: endOfCurrentWeek,
@@ -1097,8 +1107,9 @@
                             <div className="bg-white p-4 md:p-5 rounded-xl shadow-sm border border-gray-100 flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4 overflow-hidden">
                                 <div className="p-2 md:p-3 bg-rose-50 rounded-lg text-rose-600 self-start sm:self-auto shrink-0"><DollarSign size={20}/></div>
                                 <div className="min-w-0 flex-1 w-full">
-                                    <p className="text-[10px] md:text-xs text-gray-500 font-medium truncate">Total Outstanding APV</p>
+                                    <p className="text-[10px] md:text-xs text-gray-500 font-medium truncate">Total Unfunded Payables</p>
                                     <h3 className="text-sm md:text-xl font-bold text-gray-900 truncate" title={formatCurrency(totalOutstanding)}>{formatCurrency(totalOutstanding)}</h3>
+                                    <p className="text-[9px] text-gray-400 mt-0.5 truncate font-medium">Pending: {formatCurrency(totalPendingChecks)} | Chk Created: {formatCurrency(totalChecksCreated)}</p>
                                 </div>
                             </div>
                             <div className="bg-white p-4 md:p-5 rounded-xl shadow-sm border border-gray-100 flex flex-col sm:flex-row items-start sm:items-center space-y-2 sm:space-y-0 sm:space-x-4 overflow-hidden">
@@ -1317,7 +1328,7 @@
                     return 0;
                 });
 
-                let createdNeedsFundAmt = 0; let fundedReadyAmt = 0; let releasedAmt = 0;
+                let pendingCheckAmt = 0; let createdNeedsFundAmt = 0; let fundedReadyAmt = 0; let releasedAmt = 0;
                 treasuryApvs.forEach(apv => {
                     const amt = Number(apv.amount || 0);
                     const isCollected = apv.status === 'Paid' || apv.checkStatus === 'Collected';
@@ -1328,6 +1339,8 @@
                         fundedReadyAmt += amt;
                     } else if (apv.checkNumber || apv.checkStatus === 'Check Created' || apv.checkStatus === 'Prepared') {
                         createdNeedsFundAmt += amt;
+                    } else {
+                        pendingCheckAmt += amt;
                     }
                 });
 
@@ -1358,7 +1371,12 @@
                             </div>
                         </div>
                         
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 md:p-6 border-b border-gray-100 bg-slate-50">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 md:p-6 border-b border-gray-100 bg-slate-50">
+                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                                <p className="text-[10px] md:text-xs text-gray-500 font-bold uppercase tracking-widest mb-1">Pending Checks</p>
+                                <h3 className="text-xl md:text-2xl font-black text-rose-500">{formatCurrency(pendingCheckAmt)}</h3>
+                                <p className="text-[10px] text-gray-400 mt-1">APVs needing check generation</p>
+                            </div>
                             <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                                 <p className="text-[10px] md:text-xs text-gray-500 font-bold uppercase tracking-widest mb-1">Checks Created <span className="text-[8px] font-medium tracking-normal">(Needs Funding)</span></p>
                                 <h3 className="text-xl md:text-2xl font-black text-amber-500">{formatCurrency(createdNeedsFundAmt)}</h3>
@@ -1439,8 +1457,8 @@
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden animate-in fade-in duration-500 relative">
                     <div className="px-4 md:px-6 py-4 md:py-5 border-b border-gray-100 bg-gray-50 flex flex-col md:flex-row justify-between md:items-center gap-3">
                         <div>
-                            <h3 className="text-base md:text-lg font-semibold text-gray-900">APV Aging Summary Report</h3>
-                            <p className="text-xs md:text-sm text-gray-500 mt-1">As of {TODAY.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>
+                            <h3 className="text-base md:text-lg font-semibold text-gray-900">Unfunded APV Aging Report</h3>
+                            <p className="text-xs md:text-sm text-gray-500 mt-1">As of {TODAY.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}. Excludes checks already funded.</p>
                         </div>
                     </div>
                     <div className="p-4 md:p-6 border-b border-gray-100 bg-slate-50">
@@ -1480,7 +1498,21 @@
                                     ))
                                 )}
                             </tbody>
-                            <tfoot className="bg-gray-50 font-bold border-t-2 border-gray-200 text-xs md:text-sm"><tr><td className="p-3 md:p-4 text-left text-gray-900">TOTAL</td><td className="p-3 md:p-4 text-emerald-700">{formatCurrency(agingSummary['Current'])}</td><td className="p-3 md:p-4 text-yellow-700">{formatCurrency(agingSummary['1-30 Days'])}</td><td className="p-3 md:p-4 text-orange-700">{formatCurrency(agingSummary['31-60 Days'])}</td><td className="p-3 md:p-4 text-red-700">{formatCurrency(agingSummary['61-90 Days'])}</td><td className="p-3 md:p-4 text-rose-700">{formatCurrency(agingSummary['> 90 Days'])}</td><td className="p-3 md:p-4 text-gray-900 text-sm md:text-base">{formatCurrency(totalOutstanding)}</td></tr></tfoot>
+                            <tfoot className="bg-gray-50 font-bold border-t-2 border-gray-200 text-xs md:text-sm">
+                                <tr>
+                                    <td className="p-3 md:p-4 text-left text-gray-900">
+                                        TOTAL
+                                        <div className="text-[10px] text-gray-500 font-medium mt-1">Pending Checks: <span className="text-gray-700">{formatCurrency(totalPendingChecks)}</span></div>
+                                        <div className="text-[10px] text-gray-500 font-medium">Checks Created: <span className="text-gray-700">{formatCurrency(totalChecksCreated)}</span></div>
+                                    </td>
+                                    <td className="p-3 md:p-4 text-emerald-700 align-top">{formatCurrency(agingSummary['Current'])}</td>
+                                    <td className="p-3 md:p-4 text-yellow-700 align-top">{formatCurrency(agingSummary['1-30 Days'])}</td>
+                                    <td className="p-3 md:p-4 text-orange-700 align-top">{formatCurrency(agingSummary['31-60 Days'])}</td>
+                                    <td className="p-3 md:p-4 text-red-700 align-top">{formatCurrency(agingSummary['61-90 Days'])}</td>
+                                    <td className="p-3 md:p-4 text-rose-700 align-top">{formatCurrency(agingSummary['> 90 Days'])}</td>
+                                    <td className="p-3 md:p-4 text-gray-900 text-sm md:text-base align-top">{formatCurrency(totalOutstanding)}</td>
+                                </tr>
+                            </tfoot>
                         </table>
                     </div>
                 </div>
