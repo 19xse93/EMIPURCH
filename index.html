@@ -210,7 +210,6 @@
                 case '1-30 Days': return 'bg-yellow-400';
                 case '31-60 Days': return 'bg-orange-500';
                 case '61-90 Days': return 'bg-red-500';
-                case '61-90 Days': return 'bg-red-500';
                 case '> 90 Days': return 'bg-rose-700';
                 default: return 'bg-gray-300';
             }
@@ -308,13 +307,6 @@
             const [showPassword, setShowPassword] = useState(false);
 
             // Modals & Action States
-            const [insights, setInsights] = useState(null);
-            const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
-            const [emailModalOpen, setEmailModalOpen] = useState(false);
-            const [currentEmailDraft, setCurrentEmailDraft] = useState('');
-            const [isDraftingEmail, setIsDraftingEmail] = useState(false);
-            const [copySuccess, setCopySuccess] = useState(false);
-
             const [isUserModalOpen, setIsUserModalOpen] = useState(false);
             const [newUserAccount, setNewUserAccount] = useState({ email: '', accessLevel: 1 });
             const [isPoModalOpen, setIsPoModalOpen] = useState(false);
@@ -477,9 +469,26 @@
                 return () => { unsubPurchases(); unsubApvs(); unsubUsers(); unsubLogs(); };
             }, [user, isLoggedIn]);
 
+            // FIX: Dynamically derive PO statuses based on APV to retroactively catch old stuck pending bugs
+            const processedPurchases = useMemo(() => {
+                return purchases.map(po => {
+                    const linkedApvs = apvs.filter(a => a.poId === po.id);
+                    let currentStatus = po.status || 'Pending';
+                    
+                    if (linkedApvs.length > 0) {
+                        const isPaid = linkedApvs.some(a => a.status === 'Paid' || a.checkStatus === 'Collected');
+                        currentStatus = isPaid ? 'Paid' : 'Invoiced';
+                    } else {
+                        currentStatus = 'Pending';
+                    }
+                    
+                    return { ...po, status: currentStatus };
+                });
+            }, [purchases, apvs]);
+
             const availableMonths = useMemo(() => {
                 const months = new Set();
-                purchases.forEach(p => {
+                processedPurchases.forEach(p => {
                     if (p.date && typeof p.date === 'string') {
                         const prefix = p.date.substring(0, 7);
                         if (prefix.match(/^\d{4}-\d{2}$/)) months.add(prefix);
@@ -492,11 +501,11 @@
                     }
                 });
                 return Array.from(months).sort().reverse();
-            }, [purchases, apvs]);
+            }, [processedPurchases, apvs]);
 
             const baseFilteredPurchases = useMemo(() => {
                 const query = globalSearchQuery.toLowerCase();
-                return purchases.filter(p => {
+                return processedPurchases.filter(p => {
                     const matchMonth = selectedMonth === 'All' || (p.date && p.date.startsWith(selectedMonth));
                     const matchSearch = query === '' || 
                         (p.id && String(p.id).toLowerCase().includes(query)) || 
@@ -507,13 +516,13 @@
                         apvs.some(a => a.poId === p.id && ((a.id && String(a.id).toLowerCase().includes(query)) || (a.checkNumber && String(a.checkNumber).toLowerCase().includes(query))));
                     return matchMonth && matchSearch;
                 });
-            }, [purchases, apvs, selectedMonth, globalSearchQuery]);
+            }, [processedPurchases, apvs, selectedMonth, globalSearchQuery]);
 
             const baseFilteredApvs = useMemo(() => {
                 const query = globalSearchQuery.toLowerCase();
                 return apvs.filter(a => {
                     const matchMonth = selectedMonth === 'All' || (a.invoiceDate && a.invoiceDate.startsWith(selectedMonth));
-                    const linkedPo = purchases.find(p => p.id === a.poId);
+                    const linkedPo = processedPurchases.find(p => p.id === a.poId);
                     const matchSearch = query === '' || 
                         (a.id && String(a.id).toLowerCase().includes(query)) ||
                         (a.poId && String(a.poId).toLowerCase().includes(query)) ||
@@ -522,7 +531,7 @@
                         (linkedPo && ((linkedPo.remarks && String(linkedPo.remarks).toLowerCase().includes(query)) || (linkedPo.processorName && String(linkedPo.processorName).toLowerCase().includes(query)) || (linkedPo.prRequestor && String(linkedPo.prRequestor).toLowerCase().includes(query))));
                     return matchMonth && matchSearch;
                 });
-            }, [apvs, purchases, selectedMonth, globalSearchQuery]);
+            }, [apvs, processedPurchases, selectedMonth, globalSearchQuery]);
 
             const tabFilteredPurchases = useMemo(() => baseFilteredPurchases.filter(p => poStatusFilter === 'All' || p.status === poStatusFilter), [baseFilteredPurchases, poStatusFilter]);
             const tabFilteredApvs = useMemo(() => baseFilteredApvs.filter(a => apvStatusFilter === 'All' || a.status === apvStatusFilter), [baseFilteredApvs, apvStatusFilter]);
@@ -563,16 +572,15 @@
                         if (diff !== null && diff >= 0) { totalProcessingDays += diff; processedCount++; }
                     }
 
-                    // Contract vs PR Delay Calculation
                     if (p.prReceivedDate && p.contractDate) {
                         const delayDays = getDaysDiff(p.contractDate, p.prReceivedDate);
                         if (delayDays !== null) {
                             contractCount++;
                             if (delayDays > 0) {
-                                latePRs++; // PR requested after the contract date
+                                latePRs++; 
                                 totalDelayDays += delayDays;
                             } else {
-                                onTimePRs++; // PR requested on or before contract date
+                                onTimePRs++; 
                             }
                         }
                     }
@@ -673,6 +681,13 @@
                 try { 
                     await getDbRef().collection('apvs').doc(targetApv.id).update(updates); 
                     await logAction('UPDATE_CHECK', 'APV', targetApv.id, `Status: ${checkData.checkStatus}, Check #: ${checkData.checkNumber}`);
+                    
+                    // FIX: Automatically push 'Paid' status cascade up to the Purchase Order
+                    if (targetApv.poId) {
+                        const newPoStatus = isCollected ? 'Paid' : 'Invoiced';
+                        await getDbRef().collection('purchases').doc(targetApv.poId).update({ status: newPoStatus }).catch(e => console.warn("PO link missing:", e));
+                    }
+
                     setIsCheckModalOpen(false); 
                 } catch(err) { alert("Action Failed: " + err.message); }
             };
@@ -684,6 +699,12 @@
                 try { 
                     await getDbRef().collection('apvs').doc(apvToReset.id).update(updates); 
                     await logAction('RESET_FUNDING', 'APV', apvToReset.id, `Cleared all funding and check history.`);
+                    
+                    // FIX: Revert PO status back to invoiced since check was destroyed
+                    if (apvToReset.poId) {
+                        await getDbRef().collection('purchases').doc(apvToReset.poId).update({ status: 'Invoiced' }).catch(e => console.warn("PO link missing:", e));
+                    }
+
                     setIsResetFundingModalOpen(false); setApvToReset(null); 
                 } catch(err) { alert("Action Failed: " + err.message); }
             };
@@ -734,7 +755,7 @@
             const handleAddPo = async (e) => {
                 e.preventDefault(); if (!user) return;
                 if (accessLevel === 4) return; if (editingPoId && accessLevel < 1) return; if (!editingPoId && accessLevel < 2) return; 
-                const poStatus = editingPoId ? (purchases.find(p => p.id === editingPoId)?.status || 'Pending') : 'Pending';
+                const poStatus = editingPoId ? (processedPurchases.find(p => p.id === editingPoId)?.status || 'Pending') : 'Pending';
                 const action = editingPoId ? 'UPDATE' : 'CREATE';
                 try {
                     await getDbRef().collection('purchases').doc(newPo.id).set({ ...newPo, amount: Number(newPo.amount), grossAmount: Number(newPo.grossAmount || newPo.amount), discountAmount: Number(newPo.discountAmount || 0), status: poStatus, attachmentData: newPo.attachmentData || null });
@@ -761,6 +782,13 @@
                 try { 
                     await getDbRef().collection('apvs').doc(newApv.id).set(baseApv); 
                     await logAction(action, 'APV', newApv.id, `Linked PO: ${newApv.poId}, Amount: ${newApv.amount}`);
+                    
+                    // FIX: Set linked PO status automatically based on the APV status 
+                    if (baseApv.poId) {
+                        const poStatusToSet = baseApv.status === 'Paid' ? 'Paid' : 'Invoiced';
+                        await getDbRef().collection('purchases').doc(baseApv.poId).update({ status: poStatusToSet }).catch(e => console.warn("PO link missing:", e));
+                    }
+
                     setIsApvModalOpen(false); setEditingApvId(null); 
                 } catch(err) { alert("Action Failed: " + err.message); }
             };
@@ -781,8 +809,17 @@
                         await getDbRef().collection('purchases').doc(id).delete(); 
                         await logAction('DELETE', 'PO', id, `Deleted record permanently.`);
                     } else if (type === 'APV') {
+                        const targetApv = apvs.find(a => a.id === id);
                         await getDbRef().collection('apvs').doc(id).delete(); 
                         await logAction('DELETE', 'APV', id, `Deleted record permanently.`);
+
+                        // FIX: Revert PO status automatically if no other APVs exist
+                        if (targetApv && targetApv.poId) {
+                            const otherApvs = apvs.filter(a => a.poId === targetApv.poId && a.id !== id);
+                            if (otherApvs.length === 0) {
+                                await getDbRef().collection('purchases').doc(targetApv.poId).update({ status: 'Pending' }).catch(e => console.warn("PO missing:", e));
+                            }
+                        }
                     }
                 } catch(err) { alert("Delete Failed: " + err.message); }
                 setItemToDelete({ type: null, id: null });
@@ -871,6 +908,13 @@
                                 item.checkNumber = item.checkNumber || ''; item.checkStatus = item.checkStatus || 'Pending Check';
                             }
                             await dbRef.doc(item.id).set(item, { merge: true });
+
+                            // FIX: Import trigger PO status cascade updates
+                            if (importType === 'apvs' && item.poId) {
+                                const poStatus = item.status === 'Paid' ? 'Paid' : 'Invoiced';
+                                await getDbRef().collection('purchases').doc(item.poId).update({ status: poStatus }).catch(() => {});
+                            }
+
                             successCount++;
                         }
                         await logAction('IMPORT', 'BATCH', importType.toUpperCase(), `Imported ${successCount} records via CSV.`);
@@ -1063,6 +1107,7 @@
                                     <option value="All">All Status</option>
                                     <option value="Pending">Pending</option>
                                     <option value="Invoiced">Invoiced</option>
+                                    <option value="Paid">Paid</option>
                                 </select>
                                 <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none text-gray-500"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg></div>
                             </div>
@@ -1085,7 +1130,7 @@
                                         {po.paymentTerms === 'PDC' && (
                                             <span className="text-[9px] px-1.5 py-[1px] rounded bg-purple-50 text-purple-600 border border-purple-200 uppercase font-bold tracking-tighter">PDC</span>
                                         )}
-                                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold border inline-block ${po.status === 'Invoiced' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-blue-50 text-blue-600 border-blue-200'}`}>{po.status}</span>
+                                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold border inline-block ${po.status === 'Paid' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : po.status === 'Invoiced' ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : 'bg-blue-50 text-blue-600 border-blue-200'}`}>{po.status}</span>
                                     </div>
                                     <div className="text-[10px] text-gray-500 mb-1.5 line-clamp-2" title={po.description}>{po.description}</div>
                                     
@@ -1801,7 +1846,7 @@
                                 <form onSubmit={handleAddApv} className="space-y-4">
                                     <div className="grid grid-cols-2 gap-4">
                                         <div><label className="text-[10px] uppercase font-bold text-gray-500">APV Number</label><input required readOnly={!!editingApvId} value={newApv.id} onChange={e => setNewApv({...newApv, id: e.target.value})} className={`w-full px-3 py-2 border rounded-lg text-sm ${editingApvId ? 'bg-gray-100 border-gray-200 cursor-not-allowed' : 'border-gray-200'}`} /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">PO Ref</label><input required value={newApv.poId} onChange={e => { const val = e.target.value; const matched = purchases.find(p => p.id === val); setNewApv({...newApv, poId: val, ...(matched ? {vendor: matched.vendor, amount: matched.amount.toString()} : {})}); }} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
+                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">PO Ref</label><input required value={newApv.poId} onChange={e => { const val = e.target.value; const matched = processedPurchases.find(p => p.id === val); setNewApv({...newApv, poId: val, ...(matched ? {vendor: matched.vendor, amount: matched.amount.toString()} : {})}); }} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
                                     </div>
                                     <div className="grid grid-cols-2 gap-4">
                                         <div><label className="text-[10px] uppercase font-bold text-gray-500">Vendor</label><input required value={newApv.vendor} onChange={e => setNewApv({...newApv, vendor: e.target.value})} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
