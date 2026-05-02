@@ -548,7 +548,11 @@
                 });
             }, [baseFilteredPurchases, poStatusFilter, poSpecialFilter, apvs]);
             
-            const tabFilteredApvs = useMemo(() => baseFilteredApvs.filter(a => apvStatusFilter === 'All' || a.status === apvStatusFilter), [baseFilteredApvs, apvStatusFilter]);
+            const tabFilteredApvs = useMemo(() => baseFilteredApvs.filter(a => {
+                if (apvStatusFilter === 'All') return true;
+                const isCollected = a.status === 'Paid' || a.checkStatus === 'Collected';
+                return apvStatusFilter === 'Paid' ? isCollected : !isCollected;
+            }), [baseFilteredApvs, apvStatusFilter]);
 
             const filteredAuditLogs = useMemo(() => {
                 const query = globalSearchQuery.toLowerCase();
@@ -607,9 +611,10 @@
 
                 baseFilteredApvs.forEach(apv => {
                     const amt = Number(apv.amount || 0);
+                    const isCollected = apv.status === 'Paid' || apv.checkStatus === 'Collected';
                     
-                    // Only age Unpaid and Unfunded APVs
-                    if (apv.status === 'Unpaid' && !apv.funded) {
+                    // Only age Unfunded and Uncollected APVs
+                    if (!isCollected && !apv.funded) {
                         tOutstanding += amt;
                         
                         if (apv.checkNumber || apv.checkStatus === 'Check Created' || apv.checkStatus === 'Prepared') {
@@ -618,7 +623,7 @@
                             tPendingChecks += amt;
                         }
                         
-                        const category = getAgingCategory(apv.dueDate, apv.status);
+                        const category = getAgingCategory(apv.dueDate, 'Unpaid');
                         if (summary[category] !== undefined) summary[category] += amt;
                         
                         const dueDateObj = safeParseDate(apv.dueDate) || new Date();
@@ -1267,8 +1272,9 @@
                     <div className="overflow-x-auto"><table className="w-full text-left text-xs md:text-sm">
                         <thead><tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase"><th className="p-4">APV #</th><th className="p-4">Vendor & Details</th><th className="p-4 text-right">Amount</th><th className="p-4 text-center">Aging</th>{(accessLevel === 2 || accessLevel === 3) && <th className="p-4 text-center">Action</th>}</tr></thead>
                         <tbody className="divide-y divide-gray-100">{tabFilteredApvs.length === 0 ? <tr><td colSpan="5" className="p-8 text-center text-gray-400 italic">No records found.</td></tr> : tabFilteredApvs.map(apv => {
-                            const aging = getAgingCategory(apv.dueDate, apv.status);
-                            const needsCheck = apv.status === 'Unpaid' && !apv.checkNumber;
+                            const isCollected = apv.status === 'Paid' || apv.checkStatus === 'Collected';
+                            const aging = getAgingCategory(apv.dueDate, isCollected ? 'Paid' : 'Unpaid');
+                            const needsCheck = !isCollected && !apv.checkNumber;
                             
                             return (
                                 <tr key={apv.id} className="hover:bg-gray-50 transition-colors">
@@ -1306,7 +1312,7 @@
             );
 
             const renderTreasury = () => {
-                const treasuryApvs = baseFilteredApvs.filter(a => a.status === 'Unpaid' || a.checkNumber || a.funded);
+                const treasuryApvs = baseFilteredApvs;
                 
                 const filteredTreasury = treasuryApvs.filter(apv => {
                     if (treasuryStatusFilter === 'All') return true;
@@ -1339,7 +1345,7 @@
                         fundedReadyAmt += amt;
                     } else if (apv.checkNumber || apv.checkStatus === 'Check Created' || apv.checkStatus === 'Prepared') {
                         createdNeedsFundAmt += amt;
-                    } else {
+                    } else if (apv.status === 'Unpaid') {
                         pendingCheckAmt += amt;
                     }
                 });
@@ -1976,7 +1982,7 @@
                         </div>
                     )}
 
-                    <datalist id="unpaid-apvs">{apvs.filter(a => a.status === 'Unpaid').map(a => <option key={a.id} value={a.id} />)}</datalist>
+                    <datalist id="unpaid-apvs">{apvs.filter(a => a.status !== 'Paid' && a.checkStatus !== 'Collected').map(a => <option key={a.id} value={a.id} />)}</datalist>
 
                     {isApvModalOpen && (
                         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
