@@ -878,41 +878,67 @@
                         if (parsedData.length === 0) throw new Error("File is empty or incorrectly formatted.");
                         setImportingStatus(`Uploading ${parsedData.length} records. Please wait...`);
                         
-                        const dbRef = getDbRef().collection(importType);
+                        const targetCollection = importType === 'treasury' ? 'apvs' : importType;
+                        const dbRef = getDbRef().collection(targetCollection);
                         let successCount = 0;
                         for (let item of parsedData) {
                             if (!item.id) continue; 
-                            item.amount = Number(item.amount?.replace(/[^0-9.-]+/g,"") || 0);
+                            if (item.amount !== undefined) item.amount = Number(item.amount?.replace(/[^0-9.-]+/g,"") || 0);
+
+                            let linkedPoId = item.poId;
                             
                             if (importType === 'purchases') {
                                 item.prReceivedDate = standardizeDate(item.prReceivedDate);
                                 item.date = standardizeDate(item.date);
                                 item.contractDate = standardizeDate(item.contractDate);
-
                                 item.grossAmount = Number(item.grossAmount?.replace(/[^0-9.-]+/g,"") || item.amount);
                                 item.discountAmount = Number(item.discountAmount?.replace(/[^0-9.-]+/g,"") || 0);
                                 item.paymentTerms = item.paymentTerms || 'Standard Terms (30 days)'; 
                                 item.status = 'Pending';
                                 item.remarks = item.remarks || ''; item.prRequestor = item.prRequestor || ''; 
-                            } else {
+                            } else if (importType === 'apvs') {
                                 item.invoiceDate = standardizeDate(item.invoiceDate);
                                 item.dueDate = standardizeDate(item.dueDate);
                                 item.settledDate = standardizeDate(item.settledDate);
                                 item.fundedDate = standardizeDate(item.fundedDate);
                                 item.checkDate = standardizeDate(item.checkDate);
                                 item.releaseDate = standardizeDate(item.releaseDate);
-
                                 item.funded = String(item.funded).toLowerCase() === 'true' || item.status === 'Paid';
                                 if (item.funded && !item.fundedDate) item.fundedDate = item.settledDate || TODAY.toISOString().split('T')[0];
                                 item.status = item.status || 'Unpaid'; item.paymentTerms = item.paymentTerms || 'Standard Terms (30 days)';
                                 item.checkNumber = item.checkNumber || ''; item.checkStatus = item.checkStatus || 'Pending Check';
+                            } else if (importType === 'treasury') {
+                                // Treasury specific processing (only updates check and funding status)
+                                item.fundedDate = standardizeDate(item.fundedDate);
+                                item.checkDate = standardizeDate(item.checkDate);
+                                item.releaseDate = standardizeDate(item.releaseDate);
+                                item.settledDate = standardizeDate(item.settledDate) || standardizeDate(item.releaseDate);
+
+                                item.funded = String(item.funded).toLowerCase() === 'true' || String(item.funded) === '1' || item.status === 'Paid' || !!item.checkNumber;
+                                if (item.funded && !item.fundedDate) item.fundedDate = TODAY.toISOString().split('T')[0];
+                                
+                                item.checkNumber = item.checkNumber || '';
+                                item.checkStatus = item.checkStatus || 'Pending Check';
+                                
+                                if (item.checkStatus === 'Collected' || item.releaseDate || item.status === 'Paid') {
+                                    item.status = 'Paid';
+                                    item.checkStatus = 'Collected';
+                                    if (!item.settledDate) item.settledDate = item.releaseDate || TODAY.toISOString().split('T')[0];
+                                } else {
+                                    item.status = item.status || 'Unpaid';
+                                }
+
+                                if (!linkedPoId) {
+                                    const existingApv = apvs.find(a => a.id === item.id);
+                                    if (existingApv) linkedPoId = existingApv.poId;
+                                }
                             }
                             await dbRef.doc(item.id).set(item, { merge: true });
 
                             // FIX: Import trigger PO status cascade updates
-                            if (importType === 'apvs' && item.poId) {
+                            if ((importType === 'apvs' || importType === 'treasury') && linkedPoId) {
                                 const poStatus = item.status === 'Paid' ? 'Paid' : 'Invoiced';
-                                await getDbRef().collection('purchases').doc(item.poId).update({ status: poStatus }).catch(() => {});
+                                await getDbRef().collection('purchases').doc(linkedPoId).update({ status: poStatus }).catch(() => {});
                             }
 
                             successCount++;
@@ -1734,12 +1760,18 @@
                                     <div>
                                         <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">1. Select Data Type</label>
                                         <select value={importType} onChange={e => setImportType(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-50 bg-white">
-                                            <option value="purchases">Purchase Orders</option><option value="apvs">APV Records</option>
+                                            <option value="purchases">Purchase Orders</option>
+                                            <option value="apvs">APV Records</option>
+                                            <option value="treasury">Treasury Records (Check Details)</option>
                                         </select>
                                     </div>
                                     <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg">
                                         <label className="block text-[10px] font-bold text-blue-800 uppercase tracking-wide mb-1 flex items-center"><AlertCircle size={12} className="mr-1"/> Required CSV Headers</label>
-                                        <p className="text-xs text-blue-700 font-mono break-all">{importType === 'purchases' ? "id, prReceivedDate, date, contractDate, vendor, description, amount, grossAmount, discountAmount, paymentTerms, prRequestor, processorName, remarks" : "id, poId, vendor, invoiceDate, dueDate, amount, paymentTerms, status, settledDate"}</p>
+                                        <p className="text-xs text-blue-700 font-mono break-all">
+                                            {importType === 'purchases' ? "id, prReceivedDate, date, contractDate, vendor, description, amount, grossAmount, discountAmount, paymentTerms, prRequestor, processorName, remarks" : 
+                                             importType === 'apvs' ? "id, poId, vendor, invoiceDate, dueDate, amount, paymentTerms, status, settledDate" : 
+                                             "id, checkNumber, checkDate, releaseDate, checkStatus, funded, fundedDate, status, settledDate"}
+                                        </p>
                                         <p className="text-[10px] text-blue-600 mt-2 font-bold italic border-t border-blue-200 pt-2"><Sparkles size={10} className="inline mr-1" /> Smart Date Parser is active! You can upload dates as YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY, Textual (Jan 5 2024), or Raw Excel Numbers (45230).</p>
                                     </div>
                                     <div>
