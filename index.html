@@ -365,52 +365,55 @@
 
             useEffect(() => {
                 let unsubscribe = () => {};
-                try {
-                    const auth = firebase.auth();
-                    
-                    unsubscribe = auth.onAuthStateChanged(async (u) => {
-                        if (u) {
-                            setUser(u);
-                            setIsLoggedIn(true);
-                            
-                            let email = u.email;
-                            if (email) {
-                                try {
-                                    const userDoc = await getDbRef().collection('appUsers').doc(email).get();
-                                    if (userDoc.exists) {
-                                        setAccessLevel(userDoc.data().accessLevel);
-                                    } else {
-                                        setAccessLevel(3); // FORCED SUPERUSER for initial setup
+                const initAuth = async () => {
+                    try {
+                        const auth = firebase.auth();
+                        
+                        // First properly authenticate against Canvas if initial token exists
+                        if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token) {
+                            await auth.signInWithCustomToken(window.__initial_auth_token).catch(e => console.warn("Canvas auth failed", e));
+                        }
+
+                        unsubscribe = auth.onAuthStateChanged(async (u) => {
+                            if (u) {
+                                setUser(u);
+                                setIsLoggedIn(true);
+                                
+                                let email = u.email;
+                                if (email) {
+                                    try {
+                                        const userDoc = await getDbRef().collection('appUsers').doc(email).get();
+                                        if (userDoc.exists) {
+                                            setAccessLevel(userDoc.data().accessLevel);
+                                        } else {
+                                            setAccessLevel(3); // FORCED SUPERUSER for initial setup
+                                        }
+                                        setCurrentUserName(email);
+                                    } catch (e) {
+                                        console.error("Access Level Fetch Failed", e);
+                                        setAccessLevel(3); 
+                                        setCurrentUserName(email);
                                     }
-                                    setCurrentUserName(email);
-                                } catch (e) {
-                                    console.error("Access Level Fetch Failed", e);
-                                    setAccessLevel(3); 
-                                    setCurrentUserName(email);
+                                } else {
+                                    setAccessLevel(3);
+                                    setCurrentUserName('Admin (Canvas Preview)');
                                 }
                             } else {
-                                setAccessLevel(3);
-                                setCurrentUserName('Admin (Canvas Preview)');
+                                setUser(null);
+                                setIsLoggedIn(false);
+                                setAccessLevel(0);
                             }
-                        } else {
-                            setUser(null);
-                            setIsLoggedIn(false);
-                            setAccessLevel(0);
-                        }
+                            setIsDataLoading(false);
+                        });
+                    } catch (error) {
+                        console.error("Firebase SDK Initialization Error:", error);
+                        setDbError(true);
+                        setDbErrorMessage(error.message);
                         setIsDataLoading(false);
-                    });
-
-                    if (typeof window.__initial_auth_token !== 'undefined' && window.__initial_auth_token && !auth.currentUser) {
-                        auth.signInWithCustomToken(window.__initial_auth_token).catch(e => console.warn("Canvas auth failed", e));
                     }
-                    
-                } catch (error) {
-                    console.error("Firebase SDK Initialization Error:", error);
-                    setDbError(true);
-                    setDbErrorMessage(error.message);
-                    setIsDataLoading(false);
-                }
+                };
 
+                initAuth();
                 return () => unsubscribe();
             }, []);
 
@@ -566,7 +569,7 @@
                 );
             }, [auditLogs, globalSearchQuery]);
 
-            const { totalPurchases, totalSavings, totalOutstanding, totalPendingChecks, totalChecksCreated, agingSummary, vendorAging, avgProcessingTime, weeklyNeedToPay, endOfWeek, latePRPercentage, onTimePRPercentage, avgDelayDays, latePRsCount, totalWithContract } = useMemo(() => {
+            const { totalPurchases, totalSavings, totalOutstanding, totalPendingChecks, totalChecksCreated, agingSummary, vendorAging, avgProcessingTime, prTargetPercentage, weeklyNeedToPay, endOfWeek, latePRPercentage, onTimePRPercentage, avgDelayDays, latePRsCount, totalWithContract } = useMemo(() => {
                 let tPurchases = 0; let tSavings = 0; let tOutstanding = 0;
                 let tPendingChecks = 0; let tChecksCreated = 0;
                 
@@ -579,7 +582,7 @@
                 endOfCurrentWeek.setDate(startOfWeek.getDate() + 4); 
                 endOfCurrentWeek.setHours(23, 59, 59, 999);
 
-                let totalProcessingDays = 0, processedCount = 0;
+                let totalProcessingDays = 0, processedCount = 0, withinTargetCount = 0;
                 let contractCount = 0, latePRs = 0, onTimePRs = 0;
                 let totalDelayDays = 0;
 
@@ -588,7 +591,11 @@
                     
                     if (p.prReceivedDate && p.date) {
                         const diff = getDaysDiff(p.prReceivedDate, p.date);
-                        if (diff !== null && diff >= 0) { totalProcessingDays += diff; processedCount++; }
+                        if (diff !== null && diff >= 0) { 
+                            totalProcessingDays += diff; 
+                            processedCount++; 
+                            if (diff <= 3) withinTargetCount++;
+                        }
                     }
 
                     if (p.prReceivedDate && p.contractDate) {
@@ -637,6 +644,7 @@
                     }
                 });
 
+                const targetPerc = processedCount > 0 ? ((withinTargetCount / processedCount) * 100).toFixed(0) : 0;
                 const latePRPerc = contractCount > 0 ? ((latePRs / contractCount) * 100).toFixed(1) : 0;
                 const onTimePRPerc = contractCount > 0 ? ((onTimePRs / contractCount) * 100).toFixed(1) : 0;
                 const avgDelay = latePRs > 0 ? (totalDelayDays / latePRs).toFixed(1) : 0;
@@ -646,6 +654,7 @@
                     totalOutstanding: tOutstanding, totalPendingChecks: tPendingChecks, totalChecksCreated: tChecksCreated,
                     agingSummary: summary, vendorAging: Object.values(vAging).sort((a, b) => b.total - a.total),
                     avgProcessingTime: processedCount > 0 ? (totalProcessingDays / processedCount).toFixed(1) : 0,
+                    prTargetPercentage: targetPerc,
                     weeklyNeedToPay: weeklyNeed, endOfWeek: endOfCurrentWeek,
                     latePRPercentage: latePRPerc, onTimePRPercentage: onTimePRPerc, 
                     avgDelayDays: avgDelay, latePRsCount: latePRs, totalWithContract: contractCount
@@ -1141,8 +1150,17 @@
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
                             <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col justify-center">
                                 <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-3 flex items-center"><Activity className="mr-2 text-indigo-500" size={18} /> PR to PO Timeline</h3>
-                                <h4 className="text-3xl md:text-4xl font-bold text-gray-900">{avgProcessingTime} <span className="text-sm text-gray-500 font-medium">days</span></h4>
-                                <p className="text-xs text-gray-500 mt-2 italic">Avg processing time across all filtered data.</p>
+                                <div className="flex gap-4 items-end">
+                                    <div>
+                                        <h4 className="text-3xl md:text-4xl font-bold text-gray-900">{avgProcessingTime} <span className="text-sm text-gray-500 font-medium">days</span></h4>
+                                        <p className="text-xs text-gray-500 mt-1 font-medium">Average Processing Day</p>
+                                    </div>
+                                    <div className="border-l border-gray-200 pl-4">
+                                        <h4 className="text-xl md:text-2xl font-bold text-emerald-600">{prTargetPercentage}%</h4>
+                                        <p className="text-[10px] text-gray-500 mt-1 font-medium leading-tight">Within 2-3 Days</p>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] text-gray-400 mt-3 italic">Measures time from PR received to PO creation.</p>
                             </div>
 
                             <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col justify-center">
