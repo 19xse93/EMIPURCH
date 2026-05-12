@@ -1002,6 +1002,72 @@
                 reader.readAsText(importFile);
             };
 
+            const handleExportCompleteReport = async () => {
+                if (!user) return;
+                
+                const escapeCSV = (str) => {
+                    if (str === null || str === undefined) return '';
+                    const s = String(str);
+                    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                        return `"${s.replace(/"/g, '""')}"`;
+                    }
+                    return s;
+                };
+
+                let csvRows = [];
+                
+                // Headers
+                csvRows.push([
+                    "PO Number", "PR Received Date", "PO Date", "Contract Date", "Vendor (PO)", "PO Net Amount", "PO Status", "PO Payment Terms", "Processor Name", "Requestor",
+                    "APV Number", "Vendor (APV)", "Invoice Date", "Due Date", "APV Amount", "APV Status", "APV Funded Date", "Check Number", "Check Status", "Release/Settled Date"
+                ].map(escapeCSV).join(','));
+
+                // Map POs to APVs
+                processedPurchases.forEach(po => {
+                    const linkedApvs = apvs.filter(a => a.poId === po.id);
+                    const poData = [
+                        po.id, po.prReceivedDate, po.date, po.contractDate, po.vendor, po.amount, po.status, po.paymentTerms, po.processorName, po.prRequestor
+                    ];
+
+                    if (linkedApvs.length > 0) {
+                        linkedApvs.forEach(apv => {
+                            const apvData = [
+                                apv.id, apv.vendor, apv.invoiceDate, apv.dueDate, apv.amount, apv.status, apv.fundedDate, apv.checkNumber, apv.checkStatus, (apv.releaseDate || apv.settledDate)
+                            ];
+                            csvRows.push([...poData, ...apvData].map(escapeCSV).join(','));
+                        });
+                    } else {
+                        // PO has no APV yet
+                        const apvData = ["", "", "", "", "", "", "", "", "", ""];
+                        csvRows.push([...poData, ...apvData].map(escapeCSV).join(','));
+                    }
+                });
+
+                // Catch Orphaned APVs that have no matching PO id
+                apvs.filter(a => !processedPurchases.some(p => p.id === a.poId)).forEach(apv => {
+                    const poData = [apv.poId || "Orphan", "", "", "", "", "", "", "", "", ""];
+                    const apvData = [
+                        apv.id, apv.vendor, apv.invoiceDate, apv.dueDate, apv.amount, apv.status, apv.fundedDate, apv.checkNumber, apv.checkStatus, (apv.releaseDate || apv.settledDate)
+                    ];
+                    csvRows.push([...poData, ...apvData].map(escapeCSV).join(','));
+                });
+
+                const csvContent = csvRows.join("\r\n");
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                const url = URL.createObjectURL(blob);
+                
+                link.setAttribute("href", url);
+                link.setAttribute("download", `EMI_System_Report_${TODAY.toISOString().split('T')[0]}.csv`);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+                
+                await logAction('EXPORT', 'SYSTEM', 'REPORT', 'Exported complete system report to CSV');
+            };
+
             const handleLoginSubmit = async (e) => {
                 e.preventDefault();
                 setIsDataLoading(true);
@@ -1824,8 +1890,12 @@
                                     <button onClick={() => handleTabSwitch('logs')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'logs' ? 'bg-purple-600 text-white' : 'hover:bg-white/10'}`}><History className="mr-3" size={20} /> System Logs</button>
                                 </div>
                             )}
-                        </nav>
+                        </nav> 
                         <div className="p-6 bg-black/20 mt-auto shrink-0">
+                            {accessLevel >= 1 && (
+                                <button onClick={handleExportCompleteReport} className="w-full flex items-center justify-center px-4 py-2 mb-2 bg-blue-500/20 hover:bg-blue-500/40 text-blue-400 rounded-lg text-sm transition-colors"><Download size={16} className="mr-2" /> Export Report (CSV)</button>
+                            )}
+                            
                             {accessLevel === 3 && (
                                 <>
                                     <button onClick={() => setIsImportModalOpen(true)} className="w-full flex items-center justify-center px-4 py-2 mb-2 bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-400 rounded-lg text-sm transition-colors"><Download size={16} className="mr-2" /> Import Data (CSV)</button>
