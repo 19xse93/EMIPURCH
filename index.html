@@ -248,6 +248,31 @@
             return result;
         };
 
+        const mapAccessLevelToPermissions = (levels) => {
+            let p = { 
+                viewPo: false, viewApv: false, viewTreasury: false, viewReports: false,
+                managePo: false, manageApv: false, manageTreasury: false, 
+                deleteRecords: false, manageUsers: false, systemAdmin: false, exportData: false 
+            };
+            const levelArray = Array.isArray(levels) ? levels : [levels !== undefined ? levels : 0];
+
+            let isLegacyGuest = levelArray.length === 1 && levelArray[0] === 0;
+            if (levelArray.length === 0) isLegacyGuest = true;
+
+            if (levelArray.includes(3)) return { viewPo: true, viewApv: true, viewTreasury: true, viewReports: true, managePo: true, manageApv: true, manageTreasury: true, deleteRecords: true, manageUsers: true, systemAdmin: true, exportData: true };
+            
+            if (levelArray.includes(4)) { p.manageTreasury = true; p.viewTreasury = true; p.viewReports = true; p.exportData = true; }
+            if (levelArray.includes(2)) { p.managePo = true; p.manageApv = true; p.viewPo = true; p.viewApv = true; p.viewReports = true; p.exportData = true; }
+            if (levelArray.includes(1)) { p.exportData = true; }
+
+            if (levelArray.includes(10) || isLegacyGuest) { p.viewPo = true; }
+            if (levelArray.includes(11) || isLegacyGuest) { p.viewApv = true; }
+            if (levelArray.includes(12) || isLegacyGuest) { p.viewTreasury = true; }
+            if (levelArray.includes(13) || isLegacyGuest) { p.viewReports = true; }
+
+            return p; 
+        };
+
         // --- Error Boundary ---
         class ErrorBoundary extends React.Component {
             constructor(props) {
@@ -298,17 +323,26 @@
             const [selectedMonth, setSelectedMonth] = useState('All');
 
             // Authentication & Authorization
-            const [accessLevel, setAccessLevel] = useState(0); 
+            const [userPermissions, setUserPermissions] = useState(mapAccessLevelToPermissions(0));
             const [currentUserName, setCurrentUserName] = useState('');
             const [isLoggedIn, setIsLoggedIn] = useState(false);
             const [loginEmail, setLoginEmail] = useState('');
             const [loginPassword, setLoginPassword] = useState('');
             const [loginError, setLoginError] = useState(false);
             const [showPassword, setShowPassword] = useState(false);
+            
+            const [currentUserLevels, setCurrentUserLevels] = useState([0]);
 
+            // Registration States
+            const [isRegistering, setIsRegistering] = useState(false);
+            const [registerName, setRegisterName] = useState('');
+            const [registerEmail, setRegisterEmail] = useState('');
+            const [registerPassword, setRegisterPassword] = useState('');
+            const [registerDepartment, setRegisterDepartment] = useState('Purchasing');
+            
             // Modals & Action States
             const [isUserModalOpen, setIsUserModalOpen] = useState(false);
-            const [newUserAccount, setNewUserAccount] = useState({ email: '', accessLevel: 1 });
+            const [newUserAccount, setNewUserAccount] = useState({ email: '', accessLevels: [1] });
             const [isPoModalOpen, setIsPoModalOpen] = useState(false);
             const [isApvModalOpen, setIsApvModalOpen] = useState(false);
             const [isClearModalOpen, setIsClearModalOpen] = useState(false);
@@ -384,24 +418,31 @@
                                     try {
                                         const userDoc = await getDbRef().collection('appUsers').doc(email).get();
                                         if (userDoc.exists) {
-                                            setAccessLevel(userDoc.data().accessLevel);
+                                            const data = userDoc.data();
+                                            const levels = data.accessLevels || (data.accessLevel !== undefined ? [data.accessLevel] : [0]);
+                                            setUserPermissions(data.permissions || mapAccessLevelToPermissions(levels));
+                                            setCurrentUserLevels(levels);
                                         } else {
-                                            setAccessLevel(3); // FORCED SUPERUSER for initial setup
+                                            setUserPermissions(mapAccessLevelToPermissions([3])); // FORCED SUPERUSER for initial setup
+                                            setCurrentUserLevels([3]);
                                         }
                                         setCurrentUserName(email);
                                     } catch (e) {
                                         console.error("Access Level Fetch Failed", e);
-                                        setAccessLevel(3); 
+                                        setUserPermissions(mapAccessLevelToPermissions([3]));  
+                                        setCurrentUserLevels([3]);
                                         setCurrentUserName(email);
                                     }
                                 } else {
-                                    setAccessLevel(3);
+                                    setUserPermissions(mapAccessLevelToPermissions([3]));  
+                                    setCurrentUserLevels([3]);
                                     setCurrentUserName('Admin (Canvas Preview)');
                                 }
                             } else {
                                 setUser(null);
                                 setIsLoggedIn(false);
-                                setAccessLevel(0);
+                                setUserPermissions(mapAccessLevelToPermissions([0]));
+                                setCurrentUserLevels([0]);
                             }
                             setIsDataLoading(false);
                         });
@@ -451,7 +492,11 @@
 
                     unsubUsers = dbRef.collection('appUsers').onSnapshot(
                         (snapshot) => {
-                            const loadedData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                            const loadedData = snapshot.docs.map(doc => {
+                                const data = doc.data();
+                                const levels = data.accessLevels || (data.accessLevel !== undefined ? [data.accessLevel] : [0]);
+                                return { id: doc.id, ...data, accessLevels: levels, permissions: data.permissions || mapAccessLevelToPermissions(levels) };
+                            });
                             setAppUsers(loadedData);
                         },
                         (error) => { console.warn("Users listener error:", error); }
@@ -675,7 +720,7 @@
 
             const openFundModal = (apv = null) => { setFundData({ apvId: apv ? apv.id : '', fundDate: TODAY.toISOString().split('T')[0] }); setIsFundModalOpen(true); };
             const handleFundSubmit = async (e) => {
-                e.preventDefault(); if (!user || (accessLevel !== 3 && accessLevel !== 4)) return;
+                e.preventDefault(); if (!user || !userPermissions.manageTreasury) return;
                 const targetApv = apvs.find(a => a.id === fundData.apvId); if (!targetApv) return;
                 try { 
                     await getDbRef().collection('apvs').doc(targetApv.id).update({ funded: true, fundedDate: fundData.fundDate }); 
@@ -685,7 +730,7 @@
             };
 
             const handleUnfund = async (apv) => {
-                if (!user || (accessLevel !== 3 && accessLevel !== 4)) return;
+                if (!user || !userPermissions.manageTreasury) return;
                 try { 
                     await getDbRef().collection('apvs').doc(apv.id).update({ funded: false, fundedDate: null }); 
                     await logAction('UNFUND', 'APV', apv.id, `Removed funding state. Vendor: ${apv.vendor}`);
@@ -715,7 +760,7 @@
             };
 
             const handleSaveCheck = async (e) => {
-                e.preventDefault(); if (!user || (accessLevel !== 3 && accessLevel !== 4)) return;
+                e.preventDefault(); if (!user || !userPermissions.manageTreasury) return;
                 const targetApv = apvs.find(a => a.id === checkApvId); if (!targetApv) return;
                 const isCollected = checkData.checkStatus === 'Collected';
                 
@@ -744,7 +789,7 @@
 
             const confirmResetFunding = (apv) => { setApvToReset(apv); setIsResetFundingModalOpen(true); };
             const executeResetFunding = async () => {
-                if (!user || accessLevel !== 3 || !apvToReset) return;
+                if (!user || !userPermissions.manageTreasury || !apvToReset) return;
                 const updates = { funded: false, fundedDate: null, checkNumber: '', checkDate: '', releaseDate: '', checkStatus: 'Pending Check', status: 'Unpaid', settledDate: null };
                 try { 
                     await getDbRef().collection('apvs').doc(apvToReset.id).update(updates); 
@@ -804,7 +849,7 @@
 
             const handleAddPo = async (e) => {
                 e.preventDefault(); if (!user) return;
-                if (accessLevel === 4) return; if (editingPoId && accessLevel < 1) return; if (!editingPoId && accessLevel < 2) return; 
+                if (!userPermissions.managePo) return;
                 const poStatus = editingPoId ? (processedPurchases.find(p => p.id === editingPoId)?.status || 'Pending') : 'Pending';
                 const action = editingPoId ? 'UPDATE' : 'CREATE';
                 try {
@@ -817,7 +862,7 @@
             const openAddApv = () => { setEditingApvId(null); setNewApv({ id: '', poId: '', vendor: '', invoiceDate: '', dueDate: '', amount: '', funded: false, fundedDate: '', settledDate: TODAY.toISOString().split('T')[0], paymentTerms: 'Standard Terms (30 days)', status: 'Unpaid', checkNumber: '', checkDate: '', releaseDate: '', checkStatus: 'Pending Check' }); setIsApvModalOpen(true); };
 
             const handleAddApv = async (e) => {
-                e.preventDefault(); if (!user || accessLevel < 2 || accessLevel === 4) return; 
+                e.preventDefault(); if (!user || !userPermissions.manageApv) return;
                 const isPaid = newApv.status === 'Paid';
                 const baseApv = { ...newApv, amount: Number(newApv.amount), status: newApv.status, settledDate: isPaid ? newApv.settledDate : null };
                 if (isPaid) { baseApv.funded = true; if (!baseApv.fundedDate) baseApv.fundedDate = baseApv.settledDate || TODAY.toISOString().split('T')[0]; }
@@ -844,15 +889,15 @@
             };
 
             const handleDeletePo = (id) => { 
-                if (user && accessLevel === 3) setItemToDelete({ type: 'PO', id });
+                if (user && userPermissions.deleteRecords) setItemToDelete({ type: 'PO', id });
             };
             
             const handleDeleteApv = (id) => { 
-                if (user && accessLevel === 3) setItemToDelete({ type: 'APV', id });
+                if (user && userPermissions.deleteRecords) setItemToDelete({ type: 'APV', id });
             };
 
             const confirmDeleteItem = async () => {
-                if (!user || accessLevel !== 3 || !itemToDelete.id) return;
+                if (!user || !userPermissions.deleteRecords || !itemToDelete.id) return;
                 const { type, id } = itemToDelete;
                 try {
                     if (type === 'PO') {
@@ -876,7 +921,7 @@
             };
 
             const handleClearAllData = async () => {
-                if (!user || accessLevel !== 3) return;
+                if (!user || !userPermissions.systemAdmin) return;
                 setIsClearing(true);
                 try {
                     const dbRef = getDbRef();
@@ -891,23 +936,24 @@
 
             const handleAddUser = async (e) => {
                 e.preventDefault();
-                if (!user || accessLevel !== 3) return;
+                if (!user || !userPermissions.systemAdmin) return;
                 try {
                     const email = newUserAccount.email.toLowerCase().trim();
                     if (!email) { alert('Invalid email format'); return; }
                     
                     await getDbRef().collection('appUsers').doc(email).set({ 
                         email: email, 
-                        accessLevel: Number(newUserAccount.accessLevel) 
-                    });
-                    await logAction('UPDATE_ACCESS', 'USER', email, `Set access level to: ${newUserAccount.accessLevel}`);
+                        accessLevels: newUserAccount.accessLevels 
+                    }, { merge: true }); // Use merge so we don't accidentally overwrite name/department on updates
+
+                    await logAction('UPDATE_ACCESS', 'USER', email, `Set access levels to: [${newUserAccount.accessLevels.join(', ')}]`);
                     setIsUserModalOpen(false);
-                    setNewUserAccount({ email: '', accessLevel: 1 });
+                    setNewUserAccount({ email: '', accessLevels: [1] });
                 } catch(err) { alert("Failed to save user access: " + err.message); }
             };
 
             const handleDeleteUser = async (email) => {
-                if (user && accessLevel === 3) {
+                if (user && userPermissions.systemAdmin) {
                     if (confirm(`Remove custom access level for ${email}?`)) {
                         try { 
                             await getDbRef().collection('appUsers').doc(email).delete(); 
@@ -919,7 +965,7 @@
             };
 
             const handleImportSubmit = async (e) => {
-                e.preventDefault(); if (!user || accessLevel !== 3 || !importFile) return;
+                e.preventDefault(); if (!user || !userPermissions.systemAdmin || !importFile) return;
                 setImportingStatus('Parsing CSV file...');
                 const reader = new FileReader();
                 reader.onload = async (event) => {
@@ -1088,6 +1134,36 @@
                 }
             };
 
+            const handleRegisterSubmit = async (e) => {
+                e.preventDefault();
+                setIsDataLoading(true);
+                setLoginError(false);
+                setDbErrorMessage("");
+
+                try {
+                    const userCredential = await firebase.auth().createUserWithEmailAndPassword(registerEmail, registerPassword);
+                    const email = userCredential.user.email.toLowerCase();
+                    
+                    let defaultAccessLevels = [13];
+                    if (registerDepartment === 'Purchasing' || registerDepartment === 'AP') defaultAccessLevels = [2, 10, 11, 13];
+                    if (registerDepartment === 'Treasury') defaultAccessLevels = [4, 12, 13];
+                    if (registerDepartment === 'Business Development') defaultAccessLevels = [10, 11, 12, 13];
+
+                    await getDbRef().collection('appUsers').doc(email).set({
+                        email: email,
+                        name: registerName,
+                        department: registerDepartment,
+                        accessLevels: defaultAccessLevels
+                    });
+                    
+                } catch (error) {
+                    console.error("Registration Error:", error);
+                    setLoginError(true);
+                    setDbErrorMessage(error.message);
+                    setIsDataLoading(false);
+                }
+            };
+
             const handleSignOut = async () => {
                 try { await firebase.auth().signOut(); } catch(e) { console.error("Sign out error", e); }
             };
@@ -1100,40 +1176,103 @@
                         </div>
                         <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-auto p-8">
                             <div className="text-center mb-8">
-                                <h2 className="text-2xl font-bold text-gray-800">Welcome Back</h2>
-                                <p className="text-gray-500 text-sm mt-1">Please sign in to your dashboard</p>
+                                <h2 className="text-2xl font-bold text-gray-800">{isRegistering ? 'Create an Account' : 'Welcome Back'}</h2>
+                                <p className="text-gray-500 text-sm mt-1">{isRegistering ? 'Register for system access' : 'Please sign in to your dashboard'}</p>
                             </div>
                             
-                            <form className="space-y-6" onSubmit={handleLoginSubmit}>
-                                {loginError && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm text-center font-medium border border-red-200">{dbErrorMessage || 'Authentication Failed'}</div>}
-                                
-                                <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-gray-700 block">Email Address</label>
-                                    <div className="relative flex items-center">
-                                        <div className="absolute left-3 text-gray-400"><Mail size={18} /></div>
-                                        <input required type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all" placeholder="you@company.com" />
+                            {isRegistering ? (
+                                <form className="space-y-5" onSubmit={handleRegisterSubmit}>
+                                    {loginError && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm text-center font-medium border border-red-200">{dbErrorMessage || 'Registration Failed'}</div>}
+                                    
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-semibold text-gray-700 block">Full Name</label>
+                                        <div className="relative flex items-center">
+                                            <div className="absolute left-3 text-gray-400"><User size={18} /></div>
+                                            <input required type="text" value={registerName} onChange={e => setRegisterName(e.target.value)} className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all" placeholder="Juan Dela Cruz" />
+                                        </div>
                                     </div>
-                                </div>
 
-                                <div className="space-y-2">
-                                    <label className="text-sm font-semibold text-gray-700 block">Password</label>
-                                    <div className="relative flex items-center">
-                                        <div className="absolute left-3 text-gray-400"><Lock size={18} /></div>
-                                        <input required type={showPassword ? "text" : "password"} value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all" placeholder="••••••••" />
-                                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 text-gray-400 hover:text-gray-600 transition-colors">
-                                            {showPassword ? <X size={18} /> : <Eye size={18} />} 
-                                        </button>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-semibold text-gray-700 block">Department</label>
+                                        <div className="relative flex items-center">
+                                            <div className="absolute left-3 text-gray-400"><Building size={18} /></div>
+                                            <select required value={registerDepartment} onChange={e => setRegisterDepartment(e.target.value)} className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all appearance-none bg-white">
+                                                <option value="Purchasing">Purchasing</option>
+                                                <option value="AP">AP</option>
+                                                <option value="Treasury">Treasury</option>
+                                                <option value="Business Development">Business Development</option>
+                                            </select>
+                                        </div>
                                     </div>
-                                </div>
 
-                                <button type="submit" disabled={isDataLoading} className="w-full bg-[#11243E] hover:bg-[#1a355a] text-white font-semibold py-3.5 rounded-lg transition-colors duration-200 shadow-md mt-4 disabled:opacity-50">
-                                    {isDataLoading ? 'Authenticating...' : 'Sign In'}
-                                </button>
-                                
-                                <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-center text-[10px] text-gray-400">
-                                    <Shield size={12} className="mr-1" /> Protected by Firebase Authentication
-                                </div>
-                            </form>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-semibold text-gray-700 block">Email Address</label>
+                                        <div className="relative flex items-center">
+                                            <div className="absolute left-3 text-gray-400"><Mail size={18} /></div>
+                                            <input required type="email" value={registerEmail} onChange={e => setRegisterEmail(e.target.value)} className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all" placeholder="you@company.com" />
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-semibold text-gray-700 block">Password</label>
+                                        <div className="relative flex items-center">
+                                            <div className="absolute left-3 text-gray-400"><Lock size={18} /></div>
+                                            <input required type={showPassword ? "text" : "password"} value={registerPassword} onChange={e => setRegisterPassword(e.target.value)} minLength="6" className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all" placeholder="••••••••" />
+                                            <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 text-gray-400 hover:text-gray-600 transition-colors">
+                                                {showPassword ? <X size={18} /> : <Eye size={18} />} 
+                                            </button>
+                                        </div>
+                                        <p className="text-[10px] text-gray-400 text-right mt-1">Must be at least 6 characters.</p>
+                                    </div>
+
+                                    <button type="submit" disabled={isDataLoading} className="w-full bg-[#11243E] hover:bg-[#1a355a] text-white font-semibold py-3.5 rounded-lg transition-colors duration-200 shadow-md mt-4 disabled:opacity-50">
+                                        {isDataLoading ? 'Creating Account...' : 'Sign Up'}
+                                    </button>
+                                    
+                                    <div className="mt-6 text-center text-sm text-gray-600">
+                                        Already have an account? <button type="button" onClick={() => { setIsRegistering(false); setLoginError(false); }} className="text-indigo-600 font-semibold hover:underline">Sign In</button>
+                                    </div>
+                                    
+                                    <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-center text-[10px] text-gray-400">
+                                        <Shield size={12} className="mr-1" /> Protected by Firebase Authentication
+                                    </div>
+                                </form>
+                            ) : (
+                                <form className="space-y-6" onSubmit={handleLoginSubmit}>
+                                    {loginError && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm text-center font-medium border border-red-200">{dbErrorMessage || 'Authentication Failed'}</div>}
+                                    
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-semibold text-gray-700 block">Email Address</label>
+                                        <div className="relative flex items-center">
+                                            <div className="absolute left-3 text-gray-400"><Mail size={18} /></div>
+                                            <input required type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="w-full pl-10 pr-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all" placeholder="you@company.com" />
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-semibold text-gray-700 block">Password</label>
+                                        <div className="relative flex items-center">
+                                            <div className="absolute left-3 text-gray-400"><Lock size={18} /></div>
+                                            <input required type={showPassword ? "text" : "password"} value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-[#11243E] focus:border-[#11243E] outline-none transition-all" placeholder="••••••••" />
+                                            <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 text-gray-400 hover:text-gray-600 transition-colors">
+                                                {showPassword ? <X size={18} /> : <Eye size={18} />} 
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <button type="submit" disabled={isDataLoading} className="w-full bg-[#11243E] hover:bg-[#1a355a] text-white font-semibold py-3.5 rounded-lg transition-colors duration-200 shadow-md mt-4 disabled:opacity-50">
+                                        {isDataLoading ? 'Authenticating...' : 'Sign In'}
+                                    </button>
+
+                                    <div className="mt-6 text-center text-sm text-gray-600">
+                                        Don't have an account? <button type="button" onClick={() => { setIsRegistering(true); setLoginError(false); }} className="text-indigo-600 font-semibold hover:underline">Sign Up</button>
+                                    </div>
+                                    
+                                    <div className="mt-4 pt-4 border-t border-gray-200 flex items-center justify-center text-[10px] text-gray-400">
+                                        <Shield size={12} className="mr-1" /> Protected by Firebase Authentication
+                                    </div>
+                                </form>
+                            )}
                         </div>
                     </div>
                 );
@@ -1141,14 +1280,28 @@
 
             const handleTabSwitch = (tab) => { setActiveTab(tab); setIsMobileMenuOpen(false); };
 
+            const renderUnauthorized = (moduleName) => (
+                <div className="flex flex-col items-center justify-center h-[60vh] bg-white rounded-xl shadow-sm border border-gray-100 text-center p-6 animate-in fade-in">
+                    <Lock size={48} className="text-gray-300 mb-4" />
+                    <h2 className="text-xl font-bold text-gray-800">Access Restricted</h2>
+                    <p className="text-sm text-gray-500 mt-2 max-w-md">You do not have the required permissions to view the <strong>{moduleName}</strong> module. Contact your system administrator to update your access levels.</p>
+                </div>
+            );
+
             const renderHeaderBadge = () => {
-                switch(accessLevel) {
-                    case 4: return <span className="text-amber-600 flex items-center bg-amber-50 px-2 py-0.5 rounded border border-amber-200 shrink-0 text-xs"><Landmark size={12} className="mr-1" /> Treasury Access</span>;
-                    case 3: return <span className="text-emerald-600 flex items-center bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 shrink-0 text-xs"><Check size={12} className="mr-1" /> Super User</span>;
-                    case 2: return <span className="text-indigo-600 flex items-center bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 shrink-0 text-xs"><User size={12} className="mr-1" /> Level 2 Access</span>;
-                    case 1: return <span className="text-blue-600 flex items-center bg-blue-50 px-2 py-0.5 rounded border border-blue-200 shrink-0 text-xs"><User size={12} className="mr-1" /> Level 1 Access</span>;
-                    default: return <span className="text-slate-500 flex items-center bg-slate-100 px-2 py-0.5 rounded border border-slate-200 shrink-0 text-xs"><Lock size={12} className="mr-1" /> View Only</span>;
+                if (userPermissions.systemAdmin) return <span className="text-emerald-600 flex items-center bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 shrink-0 text-xs"><Check size={12} className="mr-1" /> Super User</span>;
+                
+                const badges = [];
+                if (userPermissions.manageTreasury) badges.push("Treasury");
+                if (userPermissions.managePo || userPermissions.manageApv) badges.push("Procurement");
+                
+                if (badges.length > 0) {
+                    return <span className="text-indigo-600 flex items-center bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 shrink-0 text-xs"><User size={12} className="mr-1" /> {badges.join(' & ')} Access</span>;
                 }
+                
+                if (userPermissions.exportData) return <span className="text-blue-600 flex items-center bg-blue-50 px-2 py-0.5 rounded border border-blue-200 shrink-0 text-xs"><Download size={12} className="mr-1" /> Export Access</span>;
+                
+                return <span className="text-slate-500 flex items-center bg-slate-100 px-2 py-0.5 rounded border border-slate-200 shrink-0 text-xs"><Lock size={12} className="mr-1" /> View Only</span>;
             };
 
             if (isDataLoading && !dbError) {
@@ -1298,21 +1451,11 @@
                                 </select>
                                 <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none text-gray-500"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg></div>
                             </div>
-                            <div className="relative w-full sm:w-36">
-                                <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none"><Filter size={14} className="text-gray-400" /></div>
-                                <select value={poStatusFilter} onChange={e => setPoStatusFilter(e.target.value)} className="w-full bg-white border border-gray-300 text-gray-900 text-xs md:text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block pl-8 pr-8 py-2 outline-none transition-colors appearance-none cursor-pointer">
-                                    <option value="All">All Status</option>
-                                    <option value="Pending">Pending</option>
-                                    <option value="Invoiced">Invoiced</option>
-                                    <option value="Paid">Paid</option>
-                                </select>
-                                <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none text-gray-500"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg></div>
-                            </div>
-                            {accessLevel >= 2 && accessLevel !== 4 && (<button onClick={openAddPo} className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center w-full sm:w-auto justify-center whitespace-nowrap hover:bg-indigo-700 transition-colors"><Plus size={16} className="mr-1" /> Add PO</button>)}
+                            {userPermissions.managePo && (<button onClick={openAddPo} className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center w-full sm:w-auto justify-center whitespace-nowrap hover:bg-indigo-700 transition-colors"><Plus size={16} className="mr-1" /> Add PO</button>)}
                         </div>
                     </div>
                     <div className="overflow-x-auto"><table className="w-full text-left text-xs md:text-sm">
-                        <thead><tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase"><th className="p-4 w-1/4">PO Details</th><th className="p-4 w-1/3">Vendor & Remarks</th><th className="p-4 text-right">Amount</th>{accessLevel >= 1 && accessLevel !== 4 && <th className="p-4 text-center">Action</th>}</tr></thead>
+                        <thead><tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase"><th className="p-4 w-1/4">PO Details</th><th className="p-4 w-1/3">Vendor & Remarks</th><th className="p-4 text-right">Amount</th>{userPermissions.managePo && <th className="p-4 text-center">Action</th>}</tr></thead>
                         <tbody className="divide-y divide-gray-100">{tabFilteredPurchases.length === 0 ? <tr><td colSpan="4" className="p-8 text-center text-gray-400 italic">No records found.</td></tr> : tabFilteredPurchases.map(po => {
                             const linkedApv = apvs.find(a => a.poId === po.id);
                             
@@ -1371,11 +1514,11 @@
                                         </div>
                                     )}
                                 </td>
-                                {accessLevel >= 1 && accessLevel !== 4 && (
+                                {userPermissions.managePo && (
                                     <td className="p-4 text-center space-x-2 whitespace-nowrap pt-5">
                                         <button onClick={() => openEditPo(po)} className="text-gray-400 hover:text-indigo-600 transition-colors" title="Edit PO"><Edit3 size={16} /></button>
                                         
-                                        {accessLevel === 3 && <button onClick={() => handleDeletePo(po.id)} className="text-gray-400 hover:text-red-500 transition-colors" title="Delete PO"><Trash2 size={16}/></button>}
+                                        {userPermissions.deleteRecords && <button onClick={() => handleDeletePo(po.id)} className="text-gray-400 hover:text-red-500 transition-colors" title="Delete PO"><Trash2 size={16}/></button>}
                                     </td>
                                 )}
                             </tr>
@@ -1398,11 +1541,11 @@
                                 </select>
                                 <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none text-gray-500"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg></div>
                             </div>
-                            {accessLevel >= 2 && accessLevel !== 4 && (<button onClick={openAddApv} className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center w-full sm:w-auto justify-center whitespace-nowrap hover:bg-indigo-700 transition-colors"><Plus size={16} className="mr-1" /> Add APV</button>)}
+                            {userPermissions.manageApv && (<button onClick={openAddApv} className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center w-full sm:w-auto justify-center whitespace-nowrap hover:bg-indigo-700 transition-colors"><Plus size={16} className="mr-1" /> Add APV</button>)}
                         </div>
                     </div>
                     <div className="overflow-x-auto"><table className="w-full text-left text-xs md:text-sm">
-                        <thead><tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase"><th className="p-4">APV #</th><th className="p-4">Vendor & Details</th><th className="p-4 text-right">Amount</th><th className="p-4 text-center">Aging</th>{(accessLevel === 2 || accessLevel === 3) && <th className="p-4 text-center">Action</th>}</tr></thead>
+                        <thead><tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase"><th className="p-4">APV #</th><th className="p-4">Vendor & Details</th><th className="p-4 text-right">Amount</th><th className="p-4 text-center">Aging</th>{userPermissions.manageApv && <th className="p-4 text-center">Action</th>}</tr></thead>
                         <tbody className="divide-y divide-gray-100">{tabFilteredApvs.length === 0 ? <tr><td colSpan="5" className="p-8 text-center text-gray-400 italic">No records found.</td></tr> : tabFilteredApvs.map(apv => {
                             const isCollected = apv.status === 'Paid' || apv.checkStatus === 'Collected';
                             const aging = getAgingCategory(apv.dueDate, isCollected ? 'Paid' : 'Unpaid');
@@ -1429,11 +1572,11 @@
                                     </td>
                                     <td className="p-4 text-right font-bold">{formatCurrency(apv.amount)}</td>
                                     <td className="p-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getAgingColor(aging)}`}>{aging}</span></td>
-                                    {(accessLevel === 2 || accessLevel === 3) && (
+                                    {userPermissions.manageApv && (
                                         <td className="p-4 text-center space-x-2 whitespace-nowrap">
                                             <button onClick={() => openEditApv(apv)} className="text-gray-400 hover:text-indigo-600 transition-colors" title="Edit APV"><Edit3 size={16} /></button>
                                             
-                                            {accessLevel === 3 && <button onClick={() => handleDeleteApv(apv.id)} className="text-gray-400 hover:text-red-500 transition-colors" title="Delete APV"><Trash2 size={16}/></button>}
+                                            {userPermissions.deleteRecords && <button onClick={() => handleDeleteApv(apv.id)} className="text-gray-400 hover:text-red-500 transition-colors" title="Delete APV"><Trash2 size={16}/></button>}
                                         </td>
                                     )}
                                 </tr>
@@ -1500,7 +1643,7 @@
                                     <div className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none text-gray-500"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg></div>
                                 </div>
 
-                                {(accessLevel === 3 || accessLevel === 4) && (
+                                {userPermissions.manageTreasury && (
                                     <div className="flex space-x-2 w-full sm:w-auto">
                                         <button onClick={() => openFundModal()} className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-xs font-bold hover:bg-indigo-700 transition-colors flex items-center w-full sm:w-auto justify-center"><Landmark size={14} className="mr-1"/> For Funding</button>
                                         <button onClick={() => openCheckModal()} className="bg-blue-600 text-white px-3 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors flex items-center w-full sm:w-auto justify-center"><FileSignature size={14} className="mr-1"/> Create Check</button>
@@ -1533,7 +1676,7 @@
                         </div>
 
                         <div className="overflow-x-auto"><table className="w-full text-left text-xs md:text-sm">
-                            <thead><tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase"><th className="p-4">APV Ref</th><th className="p-4">Vendor</th><th className="p-4 text-right">Amount</th><th className="p-4">Check Details</th><th className="p-4 text-center">Status</th>{(accessLevel === 3 || accessLevel === 4) && <th className="p-4 text-center">Action</th>}</tr></thead>
+                            <thead><tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase"><th className="p-4">APV Ref</th><th className="p-4">Vendor</th><th className="p-4 text-right">Amount</th><th className="p-4">Check Details</th><th className="p-4 text-center">Status</th>{userPermissions.manageTreasury && <th className="p-4 text-center">Action</th>}</tr></thead>
                             <tbody className="divide-y divide-gray-100">{sortedTreasury.length === 0 ? <tr><td colSpan="6" className="p-8 text-center text-gray-400 italic">No records match your filter.</td></tr> : sortedTreasury.map(apv => {
                                 const isCollected = apv.status === 'Paid' || apv.checkStatus === 'Collected';
                                 return (
@@ -1573,7 +1716,7 @@
                                                 );
                                             })()}
                                         </td>
-                                        {(accessLevel === 3 || accessLevel === 4) && (
+                                        {userPermissions.manageTreasury && (
                                             <td className="p-4 text-center whitespace-nowrap space-x-2">
                                                 <button onClick={() => apv.funded ? handleUnfund(apv) : openFundModal(apv)} className={`px-2 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${apv.funded ? 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`} title={apv.funded ? "Remove Funding" : "For Funding"}>
                                                     <Landmark size={12} className="inline mr-1" /> {apv.funded ? 'Funded' : 'For Funding'}
@@ -1700,7 +1843,7 @@
                                                     <th className="p-4 font-semibold">Collection Info</th>
                                                     <th className="p-4 font-semibold text-right">Amount</th>
                                                     <th className="p-4 font-semibold text-center">Status</th>
-                                                    {accessLevel === 3 && <th className="p-4 font-semibold text-center">Action</th>}
+                                                    {userPermissions.deleteRecords && <th className="p-4 font-semibold text-center">Action</th>}
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-gray-50 bg-white">
@@ -1732,7 +1875,7 @@
                                                                 {apv.status === 'Paid' ? 'Paid' : 'Funded'}
                                                             </span>
                                                         </td>
-                                                        {accessLevel === 3 && (
+                                                        {userPermissions.deleteRecords && (
                                                             <td className="p-4 text-center">
                                                                 <button onClick={() => confirmResetFunding(apv)} className="text-gray-400 hover:text-red-500 transition-colors" title="Delete Check Details & Funding">
                                                                     <Trash2 size={16} />
@@ -1756,37 +1899,57 @@
                     <div className="px-4 md:px-6 py-4 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-gray-50 gap-3">
                         <h3 className="text-base md:text-lg font-semibold text-gray-900">User Access Control</h3>
                         <button onClick={() => setIsUserModalOpen(true)} className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-xs font-medium flex items-center hover:bg-indigo-700 transition-colors">
-                            <Plus size={16} className="mr-1" /> Add / Edit User Access
+                            <Plus size={16} className="mr-1" /> Add User Manually
                         </button>
                     </div>
                     <div className="p-4 bg-indigo-50 border-b border-indigo-100 flex items-start text-xs text-indigo-800">
                         <Shield size={20} className="mr-3 shrink-0 mt-0.5 text-indigo-600" />
                         <div>
-                            <strong>Secure Firebase Auth is Active:</strong> Users and their passwords must be created in the <strong>Firebase Console &gt; Authentication</strong> dashboard first. Use this screen to assign specific access levels to those authenticated emails.
+                            <strong>Secure Firebase Auth is Active:</strong> All registered accounts are listed below. You can easily toggle their access levels using the dropdowns. Selecting "View Only" restricts the user from making any edits.
                         </div>
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-left text-xs md:text-sm">
                             <thead>
                                 <tr className="bg-white border-b border-gray-200 text-gray-500 font-semibold uppercase">
-                                    <th className="p-4">Email Address</th>
-                                    <th className="p-4">Access Level</th>
+                                    <th className="p-4">User Details</th>
+                                    <th className="p-4">Assigned Roles</th>
                                     <th className="p-4 text-center">Action</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
                                 {appUsers.length === 0 ? (
-                                    <tr><td colSpan="3" className="p-8 text-center text-gray-400 italic">No custom access levels assigned yet.</td></tr>
+                                    <tr><td colSpan="3" className="p-8 text-center text-gray-400 italic">No registered users found.</td></tr>
                                 ) : appUsers.map(u => (
-                                    <tr key={u.id} className="hover:bg-gray-50 transition-colors">
-                                        <td className="p-4 font-bold text-gray-900">{u.email}</td>
+                                    <tr key={u.id} className="hover:bg-gray-50 transition-colors align-top">
                                         <td className="p-4">
-                                            <span className="px-2 py-1 rounded-full text-[10px] font-bold border bg-gray-50 text-gray-600 border-gray-200 uppercase">
-                                                {u.accessLevel === 3 ? 'Admin (Full)' : u.accessLevel === 4 ? 'Treasury' : u.accessLevel === 2 ? 'Level 2' : u.accessLevel === 1 ? 'Level 1' : 'View Only'}
-                                            </span>
+                                            <div className="font-bold text-gray-900">{u.name || 'Unknown User'}</div>
+                                            <div className="text-[11px] text-gray-500">{u.email}</div>
+                                            {u.department && <div className="text-[10px] text-indigo-600 mt-1 font-semibold"><Building size={10} className="inline mr-1" />{u.department}</div>}
                                         </td>
-                                        <td className="p-4 text-center">
-                                            <button onClick={() => handleDeleteUser(u.id)} className="text-gray-400 hover:text-red-500 transition-colors" title="Revoke Specific Access"><Trash2 size={16} /></button>
+                                        <td className="p-4">
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {u.accessLevels?.includes(3) && <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[10px] font-bold shadow-sm">Admin</span>}
+                                                {u.accessLevels?.includes(4) && <span className="px-2.5 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-[10px] font-bold shadow-sm">Treasury</span>}
+                                                {u.accessLevels?.includes(2) && <span className="px-2.5 py-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-[10px] font-bold shadow-sm">Procurement / AP</span>}
+                                                {u.accessLevels?.includes(1) && <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-[10px] font-bold shadow-sm">Export Data</span>}
+                                                
+                                                {u.accessLevels?.includes(10) && <span className="px-2 py-0.5 bg-slate-50 text-slate-700 border border-slate-200 rounded text-[9px] font-semibold">View POs</span>}
+                                                {u.accessLevels?.includes(11) && <span className="px-2 py-0.5 bg-slate-50 text-slate-700 border border-slate-200 rounded text-[9px] font-semibold">View APVs</span>}
+                                                {u.accessLevels?.includes(12) && <span className="px-2 py-0.5 bg-slate-50 text-slate-700 border border-slate-200 rounded text-[9px] font-semibold">View Treasury</span>}
+                                                {u.accessLevels?.includes(13) && <span className="px-2 py-0.5 bg-slate-50 text-slate-700 border border-slate-200 rounded text-[9px] font-semibold">View Reports</span>}
+
+                                                {(!u.accessLevels || u.accessLevels.length === 0 || (u.accessLevels.length === 1 && u.accessLevels[0] === 0)) && <span className="px-2 py-0.5 bg-gray-100 text-gray-500 border border-gray-200 rounded text-[9px] font-semibold italic">Legacy View All</span>}
+                                            </div>
+                                        </td>
+                                        <td className="p-4 text-center whitespace-nowrap">
+                                            <button onClick={() => {
+                                                setNewUserAccount({ email: u.email, accessLevels: u.accessLevels || (u.accessLevel !== undefined ? [u.accessLevel] : [0]) });
+                                                setIsUserModalOpen(true);
+                                            }} className="text-indigo-600 hover:text-indigo-800 font-bold text-xs bg-indigo-50 px-3 py-1.5 rounded-lg transition-colors border border-indigo-100 hover:bg-indigo-100 mr-2">
+                                                Edit Access
+                                            </button>
+                                            <button onClick={() => handleDeleteUser(u.id)} className="text-gray-400 hover:text-red-500 transition-colors bg-white hover:bg-red-50 p-1.5 rounded-lg border border-transparent hover:border-red-200" title="Delete User Account"><Trash2 size={16} /></button>
                                         </td>
                                     </tr>
                                 ))}
@@ -1877,14 +2040,14 @@
                             </div>
                         </div>
                         <nav className="flex-1 px-4 space-y-2 mt-4 overflow-y-auto">
-                            <button onClick={() => handleTabSwitch('dashboard')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><LayoutDashboard className="mr-3" size={20} /> Dashboard</button>
-                            <button onClick={() => handleTabSwitch('purchases')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'purchases' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><ShoppingCart className="mr-3" size={20} /> Purchase Orders</button>
-                            <button onClick={() => handleTabSwitch('apvs')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'apvs' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><FileText className="mr-3" size={20} /> APV Records</button>
-                            <button onClick={() => handleTabSwitch('treasury')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'treasury' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><Wallet className="mr-3" size={20} /> Treasury Records</button>
-                            <button onClick={() => handleTabSwitch('funding')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'funding' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><CalendarDays className="mr-3" size={20} /> Cash Position Report</button>
-                            <button onClick={() => handleTabSwitch('aging')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'aging' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><Clock className="mr-3" size={20} /> Aging Report</button>
+                            {userPermissions.viewReports && <button onClick={() => handleTabSwitch('dashboard')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><LayoutDashboard className="mr-3" size={20} /> Dashboard</button>}
+                            {userPermissions.viewPo && <button onClick={() => handleTabSwitch('purchases')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'purchases' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><ShoppingCart className="mr-3" size={20} /> Purchase Orders</button>}
+                            {userPermissions.viewApv && <button onClick={() => handleTabSwitch('apvs')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'apvs' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><FileText className="mr-3" size={20} /> APV Records</button>}
+                            {userPermissions.viewTreasury && <button onClick={() => handleTabSwitch('treasury')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'treasury' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><Wallet className="mr-3" size={20} /> Treasury Records</button>}
+                            {userPermissions.viewReports && <button onClick={() => handleTabSwitch('funding')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'funding' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><CalendarDays className="mr-3" size={20} /> Cash Position Report</button>}
+                            {userPermissions.viewReports && <button onClick={() => handleTabSwitch('aging')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'aging' ? 'bg-indigo-600 text-white' : 'hover:bg-white/10'}`}><Clock className="mr-3" size={20} /> Aging Report</button>}
                             
-                            {accessLevel === 3 && (
+                            {userPermissions.systemAdmin && (
                                 <div className="pt-4 mt-4 border-t border-white/10 space-y-2">
                                     <button onClick={() => handleTabSwitch('users')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'users' ? 'bg-emerald-600 text-white' : 'hover:bg-white/10'}`}><UsersIcon className="mr-3" size={20} /> User Management</button>
                                     <button onClick={() => handleTabSwitch('logs')} className={`w-full flex items-center px-4 py-3 rounded-lg ${activeTab === 'logs' ? 'bg-purple-600 text-white' : 'hover:bg-white/10'}`}><History className="mr-3" size={20} /> System Logs</button>
@@ -1892,11 +2055,11 @@
                             )}
                         </nav> 
                         <div className="p-6 bg-black/20 mt-auto shrink-0">
-                            {accessLevel >= 1 && (
+                            {userPermissions.exportData && (
                                 <button onClick={handleExportCompleteReport} className="w-full flex items-center justify-center px-4 py-2 mb-2 bg-blue-500/20 hover:bg-blue-500/40 text-blue-400 rounded-lg text-sm transition-colors"><Download size={16} className="mr-2" /> Export Report (CSV)</button>
                             )}
                             
-                            {accessLevel === 3 && (
+                            {userPermissions.systemAdmin && (
                                 <>
                                     <button onClick={() => setIsImportModalOpen(true)} className="w-full flex items-center justify-center px-4 py-2 mb-2 bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-400 rounded-lg text-sm transition-colors"><Download size={16} className="mr-2" /> Import Data (CSV)</button>
                                     <button onClick={() => setIsClearModalOpen(true)} className="w-full flex items-center justify-center px-4 py-2 mb-2 bg-white/5 hover:bg-red-500/30 hover:text-red-300 text-slate-300 rounded-lg text-sm transition-colors"><Trash2 size={16} className="mr-2" /> Clear All Data</button>
@@ -1939,18 +2102,19 @@
                         </header>
                         
                         <div className="p-4 md:p-8 max-w-7xl mx-auto w-full flex-1">
-                            {activeTab === 'dashboard' && renderDashboard()}
-                            {activeTab === 'purchases' && renderPurchases()}
-                            {activeTab === 'apvs' && renderAPVs()}
-                            {activeTab === 'treasury' && renderTreasury()}
-                            {activeTab === 'funding' && renderFundingReport()}
-                            {activeTab === 'aging' && renderAgingReport()}
-                            {activeTab === 'users' && accessLevel === 3 && renderUserManagement()}
-                            {activeTab === 'logs' && accessLevel === 3 && renderLogs()}
+                            {activeTab === 'dashboard' && (userPermissions.viewReports ? renderDashboard() : renderUnauthorized('Dashboard'))}
+                            {activeTab === 'purchases' && (userPermissions.viewPo ? renderPurchases() : renderUnauthorized('Purchase Orders'))}
+                            {activeTab === 'apvs' && (userPermissions.viewApv ? renderAPVs() : renderUnauthorized('APV Records'))}
+                            {activeTab === 'treasury' && (userPermissions.viewTreasury ? renderTreasury() : renderUnauthorized('Treasury'))}
+                            {activeTab === 'funding' && (userPermissions.viewReports ? renderFundingReport() : renderUnauthorized('Cash Position Report'))}
+                            {activeTab === 'aging' && (userPermissions.viewReports ? renderAgingReport() : renderUnauthorized('Aging Report'))}
+                            {activeTab === 'users' && userPermissions.systemAdmin && renderUserManagement()}
+                            {activeTab === 'logs' && userPermissions.systemAdmin && renderLogs()}
                         </div>
                     </main>
 
                     {/* Modals */}
+                    {}
                     {itemToDelete.id && (
                         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                             <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col border-t-4 border-red-500">
@@ -1980,17 +2144,62 @@
                                 <form onSubmit={handleAddUser} className="p-4 md:p-6 space-y-4">
                                     <div>
                                         <label className="block text-xs font-medium text-gray-700 mb-1">Email Address (Registered in Firebase)</label>
-                                        <input required type="email" value={newUserAccount.email} onChange={e => setNewUserAccount({...newUserAccount, email: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="user@company.com" />
+                                        <input required list="registered-users-list" type="email" value={newUserAccount.email} onChange={e => setNewUserAccount({...newUserAccount, email: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="user@company.com" />
+                                        <datalist id="registered-users-list">
+                                            {appUsers.map(u => <option key={u.id} value={u.email}>{u.name ? `${u.name} (${u.department})` : 'Registered User'}</option>)}
+                                        </datalist>
                                     </div>
                                     <div>
-                                        <label className="block text-xs font-medium text-gray-700 mb-1">Access Level Privilege</label>
-                                        <select required value={newUserAccount.accessLevel} onChange={e => setNewUserAccount({...newUserAccount, accessLevel: Number(e.target.value)})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
-                                            <option value={3}>Admin (Full Access & User Control)</option>
-                                            <option value={4}>Treasury (Treasury & Funding Only)</option>
-                                            <option value={2}>Level 2 (Edit PO/APV Records)</option>
-                                            <option value={1}>Level 1 (View & Limited Edits)</option>
-                                            <option value={0}>Guest (View Only)</option>
-                                        </select>
+                                        <label className="block text-xs font-medium text-gray-700 mb-2">Management & Action Roles</label>
+                                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                            {[
+                                                { val: 3, label: 'Admin', desc: 'Full Access & User Control', color: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-500' },
+                                                { val: 4, label: 'Treasury', desc: 'Manage Checks & Funding', color: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-500' },
+                                                { val: 2, label: 'Procurement / AP', desc: 'Create & Edit PO/APV Records', color: 'text-indigo-700', bg: 'bg-indigo-50', border: 'border-indigo-500' },
+                                                { val: 1, label: 'Export Data', desc: 'Download CSV reports', color: 'text-blue-700', bg: 'bg-blue-50', border: 'border-blue-500' }
+                                            ].map(lvl => {
+                                                const isChecked = newUserAccount.accessLevels.includes(lvl.val);
+                                                return (
+                                                <label key={lvl.val} className={`flex items-center p-2.5 border rounded-lg cursor-pointer transition-colors ${isChecked ? `${lvl.bg} ${lvl.border} ring-1 ring-current` : 'hover:bg-gray-50 border-gray-200'}`}>
+                                                    <input type="checkbox" checked={isChecked} onChange={(e) => {
+                                                        let newLevels = [...newUserAccount.accessLevels].filter(val => val !== 0);
+                                                        if (e.target.checked) { if (!newLevels.includes(lvl.val)) newLevels.push(lvl.val); }
+                                                        else newLevels = newLevels.filter(x => x !== lvl.val);
+                                                        setNewUserAccount({...newUserAccount, accessLevels: newLevels});
+                                                    }} className="text-indigo-600 focus:ring-indigo-500 w-4 h-4 shrink-0 rounded" />
+                                                    <div className="ml-3">
+                                                        <span className={`block text-xs font-bold ${isChecked ? lvl.color : 'text-gray-900'}`}>{lvl.label}</span>
+                                                        <span className="block text-[10px] text-gray-500">{lvl.desc}</span>
+                                                    </div>
+                                                </label>
+                                            )})}
+                                        </div>
+                                    </div>
+                                    <div className="mt-4">
+                                        <label className="block text-xs font-medium text-gray-700 mb-2">View-Only Privileges (Modular Visibility)</label>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                            {[
+                                                { val: 10, label: 'View POs', desc: 'Access Purchase Orders' },
+                                                { val: 11, label: 'View APVs', desc: 'Access Accounts Payable' },
+                                                { val: 12, label: 'View Treasury', desc: 'Access Check Records' },
+                                                { val: 13, label: 'View Reports', desc: 'Dashboard & Aging' }
+                                            ].map(lvl => {
+                                                const isChecked = newUserAccount.accessLevels.includes(lvl.val);
+                                                return (
+                                                <label key={lvl.val} className={`flex items-center p-2 border rounded-lg cursor-pointer transition-colors ${isChecked ? 'bg-slate-50 border-slate-400 ring-1 ring-slate-400' : 'hover:bg-gray-50 border-gray-200'}`}>
+                                                    <input type="checkbox" checked={isChecked} onChange={(e) => {
+                                                        let newLevels = [...newUserAccount.accessLevels].filter(val => val !== 0);
+                                                        if (e.target.checked) { if (!newLevels.includes(lvl.val)) newLevels.push(lvl.val); }
+                                                        else newLevels = newLevels.filter(x => x !== lvl.val);
+                                                        setNewUserAccount({...newUserAccount, accessLevels: newLevels});
+                                                    }} className="text-slate-600 focus:ring-slate-500 w-4 h-4 shrink-0 rounded" />
+                                                    <div className="ml-2">
+                                                        <span className={`block text-xs font-bold ${isChecked ? 'text-slate-700' : 'text-gray-900'}`}>{lvl.label}</span>
+                                                        <span className="block text-[9px] text-gray-500">{lvl.desc}</span>
+                                                    </div>
+                                                </label>
+                                            )})}
+                                        </div>
                                     </div>
                                     <div className="pt-2 flex justify-end space-x-3">
                                         <button type="button" onClick={() => setIsUserModalOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">Cancel</button>
@@ -2113,123 +2322,293 @@
                             <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col border-t-4 border-red-500">
                                 <div className="px-4 md:px-6 py-3 md:py-4 border-b border-gray-100 flex justify-between items-center bg-red-50"><h3 className="font-semibold text-red-800 flex items-center text-sm md:text-base"><AlertTriangle size={18} className="mr-2" /> Reset APV</h3><button onClick={() => setIsResetFundingModalOpen(false)} className="text-red-400 hover:text-red-600"><X size={20} /></button></div>
                                 <div className="p-4 md:p-6 space-y-4 text-center"><p className="text-sm md:text-base text-gray-700">Are you sure you want to remove funding and delete all check details for <strong className="whitespace-nowrap">{apvToReset.id}</strong>?</p><p className="text-xs md:text-sm text-gray-500">This will revert the APV to an unfunded, unpaid state.</p></div>
-                                <div className="px-4 md:px-6 py-3 md:py-4 bg-gray-50 flex flex-col-reverse xs:flex-row justify-end xs:space-x-3"><button onClick={() => setIsResetFundingModalOpen(false)} className="w-full xs:w-auto px-4 py-2.5 md:py-2 mt-2 xs:mt-0 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">Cancel</button><button onClick={executeResetFunding} className="w-full xs:w-auto px-4 py-2.5 md:py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center">Remove Data</button></div>
+                                <div className="px-4 md:px-6 py-3 md:py-4 bg-gray-50 flex flex-col-reverse xs:flex-row justify-end xs:space-x-3"><button onClick={() => setIsResetFundingModalOpen(false)} className="w-full xs:w-auto px-4 py-2.5 md:py-2 mt-2 xs:mt-0 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">Cancel</button><button onClick={executeResetFunding} className="w-full xs:w-auto px-4 py-2.5 md:py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center">Reset APV</button></div>
                             </div>
                         </div>
                     )}
 
-                    <datalist id="unpaid-apvs">{apvs.filter(a => a.status !== 'Paid' && a.checkStatus !== 'Collected').map(a => <option key={a.id} value={a.id} />)}</datalist>
-
-                    {isApvModalOpen && (
-                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-                            <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 flex flex-col">
-                                <div className="flex justify-between items-center mb-6"><h3 className="font-black text-xl text-slate-800 uppercase tracking-tighter">{editingApvId ? 'Edit APV Record' : 'Register New APV'}</h3><button onClick={() => setIsApvModalOpen(false)} className="text-gray-400"><X size={20}/></button></div>
-                                <form onSubmit={handleAddApv} className="space-y-4">
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">APV Number</label><input required readOnly={!!editingApvId} value={newApv.id} onChange={e => setNewApv({...newApv, id: e.target.value})} className={`w-full px-3 py-2 border rounded-lg text-sm ${editingApvId ? 'bg-gray-100 border-gray-200 cursor-not-allowed' : 'border-gray-200'}`} /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">PO Ref</label><input required value={newApv.poId} onChange={e => { const val = e.target.value; const matched = processedPurchases.find(p => p.id === val); setNewApv({...newApv, poId: val, ...(matched ? {vendor: matched.vendor, amount: matched.amount.toString()} : {})}); }} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Vendor</label><input required value={newApv.vendor} onChange={e => setNewApv({...newApv, vendor: e.target.value})} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Billed Amount (₱)</label><input required type="number" step="0.01" value={newApv.amount} onChange={e => setNewApv({...newApv, amount: e.target.value})} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Invoice Date</label><input required type="date" value={newApv.invoiceDate} onChange={e => setNewApv({...newApv, invoiceDate: e.target.value})} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Due Date</label><input required type="date" value={newApv.dueDate} onChange={e => setNewApv({...newApv, dueDate: e.target.value})} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" /></div>
-                                    </div>
-                                    <div>
-                                        <label className="text-[10px] uppercase font-bold text-gray-500">Payment Terms</label>
-                                        <select value={newApv.paymentTerms || 'Standard Terms (30 days)'} onChange={e => setNewApv({...newApv, paymentTerms: e.target.value})} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white">
-                                            <option value="Standard Terms (30 days)">Standard Terms (30 days)</option>
-                                            <option value="COD">COD</option>
-                                            <option value="PDC">PDC</option>
-                                        </select>
-                                    </div>
-                                    <div className="flex gap-2 pt-4"><button type="button" onClick={() => setIsApvModalOpen(false)} className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest">Cancel</button><button type="submit" className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-indigo-200">Save APV</button></div>
-                                </form>
+                    {isClearModalOpen && (
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                            <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col border-t-4 border-red-600">
+                                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-gray-100 flex justify-between items-center bg-red-50"><h3 className="font-bold text-red-800 flex items-center text-sm md:text-base"><AlertTriangle size={18} className="mr-2 text-red-600" /> WIPE ALL DATA</h3><button onClick={() => setIsClearModalOpen(false)} className="text-red-400 hover:text-red-600"><X size={20} /></button></div>
+                                <div className="p-4 md:p-6 space-y-4 text-center">
+                                    <AlertTriangle size={48} className="mx-auto text-red-500 mb-4" />
+                                    <h4 className="text-lg font-black text-gray-900">Are you absolutely sure?</h4>
+                                    <p className="text-sm text-gray-700">This will permanently delete <strong>all Purchase Orders and APV records</strong> from the database. This action <strong>cannot be undone</strong>.</p>
+                                </div>
+                                <div className="px-4 md:px-6 py-3 md:py-4 bg-gray-50 flex flex-col-reverse xs:flex-row justify-end xs:space-x-3"><button onClick={() => setIsClearModalOpen(false)} className="w-full xs:w-auto px-4 py-2.5 md:py-2 mt-2 xs:mt-0 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg transition-colors" disabled={isClearing}>Cancel</button><button onClick={handleClearAllData} disabled={isClearing} className="w-full xs:w-auto px-4 py-2.5 md:py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-bold transition-colors flex items-center justify-center disabled:opacity-50">{isClearing ? 'Deleting...' : 'YES, WIPE EVERYTHING'}</button></div>
                             </div>
                         </div>
                     )}
 
                     {isPoModalOpen && (
-                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-                            <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 flex flex-col">
-                                <div className="flex justify-between items-center mb-6"><h3 className="font-black text-xl text-slate-800 uppercase tracking-tighter">{editingPoId ? 'Edit Purchase Order' : 'New Purchase Order'}</h3><button onClick={() => setIsPoModalOpen(false)} className="text-gray-400"><X size={20}/></button></div>
-                                <form onSubmit={handleAddPo} className="space-y-4">
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">PO Number</label><input required readOnly={!!editingPoId} value={newPo.id} onChange={e => setNewPo({...newPo, id: e.target.value})} className={`w-full px-3 py-2 border rounded-lg text-sm ${editingPoId ? 'bg-gray-100 border-gray-200 cursor-not-allowed' : 'border-gray-200'}`} /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Vendor</label><input required disabled={accessLevel === 1} value={newPo.vendor} onChange={e => setNewPo({...newPo, vendor: e.target.value})} className={`w-full px-3 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100 border-gray-200 cursor-not-allowed text-gray-500' : 'border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none'}`} /></div>
-                                    </div>
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">PR Received</label><input required disabled={accessLevel === 1} type="date" value={newPo.prReceivedDate} onChange={e => setNewPo({...newPo, prReceivedDate: e.target.value})} className={`w-full px-2.5 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100 border-gray-200 cursor-not-allowed text-gray-500' : 'border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none'}`} /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">PO Issue Date</label><input required disabled={accessLevel === 1} type="date" value={newPo.date} onChange={e => setNewPo({...newPo, date: e.target.value})} className={`w-full px-2.5 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100 border-gray-200 cursor-not-allowed text-gray-500' : 'border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none'}`} /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Contract Date</label><input disabled={accessLevel === 1} type="date" value={newPo.contractDate} onChange={e => setNewPo({...newPo, contractDate: e.target.value})} className={`w-full px-2.5 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100 border-gray-200 cursor-not-allowed text-gray-500' : 'border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none'}`} /></div>
-                                    </div>
-                                    <div className="grid grid-cols-3 gap-3">
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Gross Amt (₱)</label><input required disabled={accessLevel === 1} type="number" step="0.01" value={newPo.grossAmount} onChange={e => { const gross = e.target.value; const discount = newPo.discountAmount || 0; const net = Math.max(0, parseFloat(gross || 0) - parseFloat(discount)).toString(); setNewPo({...newPo, grossAmount: gross, amount: net}); }} className={`w-full px-2.5 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100 border-gray-200' : 'border-gray-200 focus:ring-2 focus:ring-indigo-500'}`} /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-emerald-600">Discount (₱)</label><input disabled={accessLevel === 1} type="number" step="0.01" value={newPo.discountAmount} onChange={e => { const discount = e.target.value; const gross = newPo.grossAmount || 0; const net = Math.max(0, parseFloat(gross || 0) - parseFloat(discount || 0)).toString(); setNewPo({...newPo, discountAmount: discount, amount: net}); }} className={`w-full px-2.5 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100 border-gray-200' : 'border-gray-200 focus:ring-2 focus:ring-emerald-500'}`} /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-indigo-600">Net Amount (₱)</label><input disabled type="number" value={newPo.amount} className="w-full px-2.5 py-2 border rounded-lg text-sm bg-indigo-50 text-indigo-800 font-bold border-indigo-200 cursor-not-allowed" /></div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">PR Requestor</label><input required disabled={accessLevel === 1} type="text" value={newPo.prRequestor || ''} onChange={e => setNewPo({...newPo, prRequestor: e.target.value})} className={`w-full px-3 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100' : 'focus:ring-2 focus:ring-indigo-500'}`} placeholder="e.g., Juan Santos" /></div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Purchasing Processor</label><input required disabled={accessLevel === 1} type="text" value={newPo.processorName || ''} onChange={e => setNewPo({...newPo, processorName: e.target.value})} className={`w-full px-3 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100' : 'focus:ring-2 focus:ring-indigo-500'}`} placeholder="e.g., Alex Reyes" /></div>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="text-[10px] uppercase font-bold text-gray-500">Payment Terms</label>
-                                            <select disabled={accessLevel === 1} value={newPo.paymentTerms || 'Standard Terms (30 days)'} onChange={e => setNewPo({...newPo, paymentTerms: e.target.value})} className={`w-full px-2.5 py-2 border rounded-lg text-sm bg-white ${accessLevel === 1 ? 'bg-gray-100' : ''}`}>
-                                                <option value="Standard Terms (30 days)">Standard Terms (30 days)</option>
-                                                <option value="COD">COD</option>
-                                                <option value="PDC">PDC</option>
-                                            </select>
-                                        </div>
-                                        <div><label className="text-[10px] uppercase font-bold text-gray-500">Description</label><input required disabled={accessLevel === 1} type="text" value={newPo.description || ''} onChange={e => setNewPo({...newPo, description: e.target.value})} className={`w-full px-3 py-2 border rounded-lg text-sm ${accessLevel === 1 ? 'bg-gray-100' : 'focus:ring-2 focus:ring-indigo-500'}`} placeholder="Brief description of items" /></div>
-                                    </div>
-                                    <div><label className="text-[10px] uppercase font-bold text-gray-500">Remarks / Order Notes <span className="text-gray-400 font-normal lowercase">(Optional)</span></label><textarea value={newPo.remarks || ''} onChange={e => setNewPo({...newPo, remarks: e.target.value})} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white" rows="2" placeholder="Any concerns regarding this purchase..."></textarea></div>
-                                    
-                                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                                        <label className="text-[10px] uppercase font-bold text-slate-700 block mb-2 flex items-center"><Paperclip size={12} className="mr-1"/> Attach PR/PO Document <span className="text-slate-400 font-normal lowercase ml-1">(JPEG/PNG only)</span></label>
-                                        <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-3">
-                                            <input disabled={accessLevel === 1} type="file" accept="image/jpeg, image/png, image/jpg" onChange={handleFileUpload} className="text-xs file:mr-3 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 disabled:opacity-50 w-full" />
-                                            {newPo.attachmentData && (
-                                                <div className="shrink-0 flex items-center bg-emerald-50 text-emerald-700 px-2.5 py-1.5 rounded-lg text-[10px] font-bold border border-emerald-200">
-                                                    <ImageIcon size={12} className="mr-1" /> Image Attached
-                                                    <button type="button" onClick={() => setNewPo({...newPo, attachmentData: ''})} className="ml-2 text-emerald-900 hover:text-red-600 bg-emerald-100/50 p-0.5 rounded-full" title="Remove Attachment"><X size={12} /></button>
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in overflow-y-auto pt-20 pb-20">
+                            <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col my-auto border border-gray-200">
+                                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50 sticky top-0 z-10">
+                                    <h3 className="font-semibold text-gray-900 text-sm md:text-base flex items-center"><ShoppingCart className="mr-2 text-indigo-600" size={18} /> {editingPoId ? 'Edit' : 'Create'} Purchase Order</h3>
+                                    <button onClick={() => setIsPoModalOpen(false)} className="text-gray-400 hover:text-gray-600 bg-gray-200/50 hover:bg-gray-200 rounded-full p-1 transition-colors"><X size={20} /></button>
+                                </div>
+                                <div className="p-4 md:p-6 overflow-y-auto bg-white" style={{maxHeight: 'calc(100vh - 140px)'}}>
+                                    <form id="poForm" onSubmit={handleAddPo} className="space-y-6">
+                                        
+                                        <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100/50 space-y-4">
+                                            <h4 className="text-xs font-bold text-blue-800 uppercase tracking-widest border-b border-blue-100 pb-2 flex items-center"><FileText size={14} className="mr-1.5"/> Core Details</h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                                                <div className="sm:col-span-2">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">PO Number / ID <span className="text-red-500">*</span></label>
+                                                    <input required type="text" value={newPo.id} onChange={e => setNewPo({...newPo, id: e.target.value})} disabled={!!editingPoId} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 font-bold" placeholder="e.g. PO-2024-001" />
                                                 </div>
-                                            )}
+                                                <div className="sm:col-span-2">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Vendor Name <span className="text-red-500">*</span></label>
+                                                    <input required type="text" value={newPo.vendor} onChange={e => setNewPo({...newPo, vendor: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Vendor Company Ltd" />
+                                                </div>
+                                                <div className="sm:col-span-4">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Description / Items <span className="text-red-500">*</span></label>
+                                                    <input required type="text" value={newPo.description} onChange={e => setNewPo({...newPo, description: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Brief description of purchase" />
+                                                </div>
+                                            </div>
                                         </div>
-                                    </div>
 
-                                    <div className="flex gap-2 pt-4"><button type="button" onClick={() => setIsPoModalOpen(false)} className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase tracking-widest">Cancel</button><button type="submit" className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-indigo-200">Save PO</button></div>
-                                </form>
+                                        <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100/50 space-y-4">
+                                            <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-widest border-b border-emerald-100 pb-2 flex items-center"><DollarSign size={14} className="mr-1.5"/> Financials</h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Gross Amount (₱) <span className="text-red-500">*</span></label>
+                                                    <input required type="number" step="0.01" min="0" value={newPo.grossAmount} onChange={e => {
+                                                        const gross = Number(e.target.value);
+                                                        const discount = Number(newPo.discountAmount || 0);
+                                                        setNewPo({...newPo, grossAmount: e.target.value, amount: Math.max(0, gross - discount).toString()});
+                                                    }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 font-mono" placeholder="0.00" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-emerald-700 uppercase tracking-wide mb-1.5 flex items-center"><Tag size={10} className="mr-1"/> Discount Amount (₱)</label>
+                                                    <input type="number" step="0.01" min="0" value={newPo.discountAmount} onChange={e => {
+                                                        const discount = Number(e.target.value);
+                                                        const gross = Number(newPo.grossAmount || 0);
+                                                        setNewPo({...newPo, discountAmount: e.target.value, amount: Math.max(0, gross - discount).toString()});
+                                                    }} className="w-full px-3 py-2 border border-emerald-200 bg-emerald-50/30 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 font-mono text-emerald-700" placeholder="0.00" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-indigo-700 uppercase tracking-wide mb-1.5">Net Amount (₱) <span className="text-[9px] text-gray-400 font-normal lowercase">(Auto-calc)</span></label>
+                                                    <input required type="number" step="0.01" value={newPo.amount} readOnly className="w-full px-3 py-2 border border-indigo-200 bg-indigo-50 rounded-lg text-sm font-bold font-mono text-indigo-900" placeholder="0.00" />
+                                                </div>
+                                                <div className="sm:col-span-3">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Payment Terms</label>
+                                                    <select required value={newPo.paymentTerms} onChange={e => setNewPo({...newPo, paymentTerms: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white">
+                                                        <option value="Standard Terms (30 days)">Standard Terms (30 days)</option>
+                                                        <option value="15 Days">15 Days</option>
+                                                        <option value="45 Days">45 Days</option>
+                                                        <option value="60 Days">60 Days</option>
+                                                        <option value="COD">COD (Cash on Delivery)</option>
+                                                        <option value="PDC">PDC (Post Dated Check)</option>
+                                                        <option value="Advance Payment">Advance Payment</option>
+                                                        <option value="Custom">Custom (Specify in Remarks)</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-100/50 space-y-4">
+                                            <h4 className="text-xs font-bold text-amber-800 uppercase tracking-widest border-b border-amber-100 pb-2 flex items-center"><Calendar size={14} className="mr-1.5"/> Timelines & Personnel</h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5" title="Date the PR was actually received">PR Rcvd Date</label>
+                                                    <input type="date" value={newPo.prReceivedDate} onChange={e => setNewPo({...newPo, prReceivedDate: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5" title="Date the PO was generated">PO Date</label>
+                                                    <input required type="date" value={newPo.date} onChange={e => setNewPo({...newPo, date: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5" title="Expected delivery or contract start">Contract Date</label>
+                                                    <input type="date" value={newPo.contractDate} onChange={e => setNewPo({...newPo, contractDate: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white" />
+                                                </div>
+                                                <div className="sm:col-span-2">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Requestor Name</label>
+                                                    <input type="text" value={newPo.prRequestor} onChange={e => setNewPo({...newPo, prRequestor: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Who requested this?" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Processor Name</label>
+                                                    <input type="text" value={newPo.processorName} onChange={e => setNewPo({...newPo, processorName: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Who processed this?" />
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div className="bg-gray-50/80 p-4 rounded-xl border border-gray-200">
+                                                <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Additional Remarks</label>
+                                                <textarea value={newPo.remarks} onChange={e => setNewPo({...newPo, remarks: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 min-h-[80px]" placeholder="Any special instructions or notes..." />
+                                            </div>
+                                            
+                                            <div className="bg-gray-50/80 p-4 rounded-xl border border-gray-200">
+                                                <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5 flex items-center justify-between">
+                                                    <span>Attachment (Image)</span>
+                                                    {newPo.attachmentData && <button type="button" onClick={() => setNewPo({...newPo, attachmentData: ''})} className="text-red-500 hover:text-red-700">Remove</button>}
+                                                </label>
+                                                <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-lg bg-white relative overflow-hidden group hover:border-indigo-400 transition-colors h-[80px]">
+                                                    {newPo.attachmentData ? (
+                                                        <div className="absolute inset-0 w-full h-full">
+                                                            <img src={newPo.attachmentData} alt="Preview" className="w-full h-full object-cover opacity-50 group-hover:opacity-30 transition-opacity" />
+                                                            <div className="absolute inset-0 flex items-center justify-center">
+                                                                <span className="bg-white/90 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded backdrop-blur border border-indigo-100 shadow-sm">Image Attached</span>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="space-y-1 text-center">
+                                                            <ImageIcon className="mx-auto h-8 w-8 text-gray-400" />
+                                                            <div className="flex text-[10px] text-gray-600 justify-center">
+                                                                <label className="relative cursor-pointer bg-white rounded-md font-medium text-indigo-600 hover:text-indigo-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-indigo-500">
+                                                                    <span>Upload a file</span>
+                                                                    <input type="file" className="sr-only" accept="image/*" onChange={handleFileUpload} />
+                                                                </label>
+                                                                <p className="pl-1">or drag and drop</p>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                    </form>
+                                </div>
+                                <div className="px-4 md:px-6 py-3 md:py-4 bg-gray-50 border-t border-gray-200 flex flex-col-reverse xs:flex-row justify-end xs:space-x-3 mt-auto sticky bottom-0">
+                                    <button type="button" onClick={() => setIsPoModalOpen(false)} className="w-full xs:w-auto px-4 py-2.5 md:py-2 mt-2 xs:mt-0 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">Cancel</button>
+                                    <button type="submit" form="poForm" className="w-full xs:w-auto px-6 py-2.5 md:py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm">{editingPoId ? 'Update PO' : 'Save New PO'}</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {isApvModalOpen && (
+                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in overflow-y-auto pt-20 pb-20">
+                            <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col my-auto border border-gray-200">
+                                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50 sticky top-0 z-10">
+                                    <h3 className="font-semibold text-gray-900 text-sm md:text-base flex items-center"><FileText className="mr-2 text-indigo-600" size={18} /> {editingApvId ? 'Edit' : 'Create'} APV Record</h3>
+                                    <button onClick={() => setIsApvModalOpen(false)} className="text-gray-400 hover:text-gray-600 bg-gray-200/50 hover:bg-gray-200 rounded-full p-1 transition-colors"><X size={20} /></button>
+                                </div>
+                                <div className="p-4 md:p-6 overflow-y-auto bg-white" style={{maxHeight: 'calc(100vh - 140px)'}}>
+                                    <form id="apvForm" onSubmit={handleAddApv} className="space-y-6">
+                                        
+                                        <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100/50 space-y-4">
+                                            <h4 className="text-xs font-bold text-blue-800 uppercase tracking-widest border-b border-blue-100 pb-2 flex items-center"><LinkIcon size={14} className="mr-1.5"/> Linkage & Core</h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                                                <div className="sm:col-span-2">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">APV Number <span className="text-red-500">*</span></label>
+                                                    <input required type="text" value={newApv.id} onChange={e => setNewApv({...newApv, id: e.target.value})} disabled={!!editingApvId} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 font-bold" placeholder="e.g. APV-2024-001" />
+                                                </div>
+                                                <div className="sm:col-span-2 relative">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Link to Purchase Order <span className="text-red-500">*</span></label>
+                                                    <input required list="po-list" value={newApv.poId} onChange={e => {
+                                                        const val = e.target.value; setNewApv(prev => ({...prev, poId: val}));
+                                                        const linkedPo = purchases.find(p => p.id === val);
+                                                        if (linkedPo && !editingApvId) {
+                                                            setNewApv(prev => ({...prev, vendor: linkedPo.vendor, amount: linkedPo.amount.toString(), paymentTerms: linkedPo.paymentTerms || 'Standard Terms (30 days)'}));
+                                                        }
+                                                    }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white" placeholder="Type PO ID..." />
+                                                    <datalist id="po-list">{purchases.map(p => <option key={p.id} value={p.id}>{p.vendor}</option>)}</datalist>
+                                                    {(() => {
+                                                        const match = purchases.find(p => p.id === newApv.poId);
+                                                        return match ? <div className="absolute right-0 top-0 mt-0.5 text-[9px] text-emerald-600 font-bold flex items-center"><Check size={10} className="mr-0.5"/> PO Found</div> : null;
+                                                    })()}
+                                                </div>
+                                                <div className="sm:col-span-4">
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Vendor Name <span className="text-red-500">*</span></label>
+                                                    <input required type="text" value={newApv.vendor} onChange={e => setNewApv({...newApv, vendor: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500" placeholder="Auto-fills if PO is linked" />
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-100/50 space-y-4">
+                                            <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-widest border-b border-emerald-100 pb-2 flex items-center"><DollarSign size={14} className="mr-1.5"/> Financials</h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Amount Payable (₱) <span className="text-red-500">*</span></label>
+                                                    <input required type="number" step="0.01" min="0" value={newApv.amount} onChange={e => setNewApv({...newApv, amount: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 font-bold font-mono text-gray-900" placeholder="0.00" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Payment Terms</label>
+                                                    <select required value={newApv.paymentTerms} onChange={e => setNewApv({...newApv, paymentTerms: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white">
+                                                        <option value="Standard Terms (30 days)">Standard Terms (30 days)</option>
+                                                        <option value="15 Days">15 Days</option>
+                                                        <option value="45 Days">45 Days</option>
+                                                        <option value="60 Days">60 Days</option>
+                                                        <option value="COD">COD (Cash on Delivery)</option>
+                                                        <option value="PDC">PDC (Post Dated Check)</option>
+                                                        <option value="Advance Payment">Advance Payment</option>
+                                                        <option value="Custom">Custom</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-100/50 space-y-4">
+                                            <h4 className="text-xs font-bold text-amber-800 uppercase tracking-widest border-b border-amber-100 pb-2 flex items-center"><Calendar size={14} className="mr-1.5"/> Scheduling</h4>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Invoice Date <span className="text-red-500">*</span></label>
+                                                    <input required type="date" value={newApv.invoiceDate} onChange={e => {
+                                                        const iDate = e.target.value;
+                                                        setNewApv(prev => {
+                                                            let dDate = prev.dueDate;
+                                                            if (iDate && prev.paymentTerms === 'Standard Terms (30 days)') {
+                                                                const d = new Date(iDate); d.setDate(d.getDate() + 30); dDate = d.toISOString().split('T')[0];
+                                                            }
+                                                            return {...prev, invoiceDate: iDate, dueDate: dDate};
+                                                        });
+                                                    }} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Due Date <span className="text-red-500">*</span></label>
+                                                    <input required type="date" value={newApv.dueDate} onChange={e => setNewApv({...newApv, dueDate: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white" />
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-purple-50/50 p-4 rounded-xl border border-purple-100/50 space-y-4">
+                                            <h4 className="text-xs font-bold text-purple-800 uppercase tracking-widest border-b border-purple-100 pb-2 flex items-center"><Activity size={14} className="mr-1.5"/> Status Override</h4>
+                                            <div className="grid grid-cols-1 gap-4">
+                                                <div>
+                                                    <label className="block text-[10px] font-bold text-gray-700 uppercase tracking-wide mb-1.5">Current Status</label>
+                                                    <select required value={newApv.status} onChange={e => setNewApv({...newApv, status: e.target.value})} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white">
+                                                        <option value="Unpaid">Unpaid</option>
+                                                        <option value="Paid">Paid / Settled Manually</option>
+                                                    </select>
+                                                </div>
+                                                {newApv.status === 'Paid' && (
+                                                    <div className="animate-in fade-in">
+                                                        <label className="block text-[10px] font-bold text-emerald-700 uppercase tracking-wide mb-1.5 flex items-center"><Check size={10} className="mr-1"/> Settlement Date</label>
+                                                        <input required type="date" value={newApv.settledDate} onChange={e => setNewApv({...newApv, settledDate: e.target.value})} className="w-full px-3 py-2 border border-emerald-300 bg-emerald-50 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500" />
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                    </form>
+                                </div>
+                                <div className="px-4 md:px-6 py-3 md:py-4 bg-gray-50 border-t border-gray-200 flex flex-col-reverse xs:flex-row justify-end xs:space-x-3 mt-auto sticky bottom-0">
+                                    <button type="button" onClick={() => setIsApvModalOpen(false)} className="w-full xs:w-auto px-4 py-2.5 md:py-2 mt-2 xs:mt-0 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">Cancel</button>
+                                    <button type="submit" form="apvForm" className="w-full xs:w-auto px-6 py-2.5 md:py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm">{editingApvId ? 'Update APV' : 'Save APV Record'}</button>
+                                </div>
                             </div>
                         </div>
                     )}
 
                     {viewingImage && (
-                        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4 animate-in fade-in" onClick={() => setViewingImage(null)}>
-                            <div className="relative max-w-5xl w-full flex flex-col items-center justify-center h-full" onClick={e => e.stopPropagation()}>
-                                <div className="absolute top-4 right-4 flex space-x-2">
-                                    <a href={viewingImage} download={`PO_Attachment_${TODAY.getTime()}.jpg`} className="bg-white/20 hover:bg-white/40 text-white p-2 rounded-full transition-colors" title="Download Image"><Download size={24} /></a>
-                                    <button onClick={() => setViewingImage(null)} className="bg-white/20 hover:bg-red-500/80 text-white p-2 rounded-full transition-colors" title="Close"><X size={24} /></button>
-                                </div>
-                                <img src={viewingImage} alt="PO Attachment" className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl" />
-                            </div>
-                        </div>
-                    )}
-                    
-                    {isClearModalOpen && (
-                        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                            <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden flex flex-col border-t-4 border-red-500">
-                                <div className="px-4 md:px-6 py-3 md:py-4 border-b border-gray-100 flex justify-between items-center bg-red-50"><h3 className="font-semibold text-red-800 flex items-center text-sm md:text-base"><AlertTriangle size={18} className="mr-2" /> Warning</h3><button onClick={() => setIsClearModalOpen(false)} className="text-red-400 hover:text-red-600"><X size={20} /></button></div>
-                                <div className="p-4 md:p-6 space-y-4 text-center"><p className="text-sm md:text-base text-gray-700">Are you sure you want to permanently delete all Purchase Orders and APV records?</p><p className="text-xs md:text-sm text-gray-500">This action cannot be undone.</p></div>
-                                <div className="px-4 md:px-6 py-3 md:py-4 bg-gray-50 flex flex-col-reverse xs:flex-row justify-end xs:space-x-3"><button onClick={() => setIsClearModalOpen(false)} disabled={isClearing} className="w-full xs:w-auto px-4 py-2.5 md:py-2 mt-2 xs:mt-0 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">Cancel</button><button onClick={handleClearAllData} disabled={isClearing} className="w-full xs:w-auto px-4 py-2.5 md:py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center disabled:opacity-50">{isClearing ? <Loader2 size={16} className="animate-spin mr-2" /> : <Trash2 size={16} className="mr-2" />}{isClearing ? 'Deleting...' : 'Delete Data'}</button></div>
+                        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 p-4 animate-in fade-in" onClick={() => setViewingImage(null)}>
+                            <div className="relative max-w-5xl w-full h-full flex items-center justify-center pointer-events-none">
+                                <img src={viewingImage} alt="Attachment" className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl pointer-events-auto" onClick={(e) => e.stopPropagation()} />
+                                <button onClick={() => setViewingImage(null)} className="absolute top-4 right-4 text-white bg-black/50 hover:bg-black/80 rounded-full p-2 backdrop-blur pointer-events-auto transition-colors">
+                                    <X size={24} />
+                                </button>
                             </div>
                         </div>
                     )}
                 </div>
             );
         }
+
+        // Add dummy LinkIcon to fix reference error in APV modal
+        const LinkIcon = safeIcon('Link');
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<ErrorBoundary><App /></ErrorBoundary>);
